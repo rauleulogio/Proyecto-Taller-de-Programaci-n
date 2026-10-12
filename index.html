@@ -1,0 +1,1620 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AguaPura: sistema web de gestión para una embotelladora de agua purificada (pedidos, inventario, producción, rutas y caja).">
+  <title>AguaPura · Iniciar sesión</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ================= PORTADA (inicio de sesión) ================= -->
+  <div class="portada" id="portada">
+
+    <header class="cab-sitio">
+      <div class="brand" id="logo"></div>
+      <nav class="cab-nav" aria-label="Secciones de la página">
+        <a href="#caracteristicas">Características</a>
+        <a href="#acceso">Acceso</a>
+      </nav>
+    </header>
+
+    <main class="login" id="principal">
+      <section class="lado" id="caracteristicas" aria-labelledby="titulo-portada">
+        <h1 id="titulo-portada">Gestión de agua purificada, del bidón a la caja</h1>
+        <p>Pedidos, inventario de bidones llenos y vacíos, rutas de reparto y cobranza en un solo sistema.</p>
+        <ul><li>Control de envases retornables por cliente</li><li>Lotes con control de calidad y trazabilidad</li><li>Hojas de ruta con validación de capacidad</li><li>Cuadre de caja y comprobantes</li></ul>
+      </section>
+      <section class="form-lado" id="acceso" aria-label="Acceso al sistema">
+        <form class="caja" id="login" novalidate>
+          <div><h2 style="font-size:1.4rem">Iniciar sesión</h2><span class="muted small">El menú se adapta al rol del usuario.</span></div>
+          <div class="campo"><label for="correo">Correo electrónico</label><input id="correo" type="email" autocomplete="username" placeholder="usuario@aguapura.pe" required></div>
+          <div class="campo"><label for="pass">Contraseña</label><input id="pass" type="password" autocomplete="current-password" required></div>
+          <div id="err" class="alerta err hidden" role="alert"></div>
+          <button class="btn lg bloque" type="submit">Ingresar</button>
+          <div class="demo"><b>Cuentas de práctica</b> (clic para completar)<div id="demo"></div></div>
+        </form>
+      </section>
+    </main>
+
+    <footer class="pie-sitio">
+      <span><b>AguaPura</b> · Sistema de gestión de agua purificada</span>
+      <span>Taller de Programación Web · UTP · © <span id="anio"></span></span>
+      <span>Versión de demostración: los datos se guardan en este navegador</span>
+    </footer>
+
+  </div>
+
+  <!-- ================= APLICACIÓN (se muestra al iniciar sesión) ================= -->
+  <div class="app" id="app" hidden></div>
+
+  <script>
+/* ====== db.js ====== */
+/* ===========================================================
+   AguaPura · Capa de datos y reglas de negocio
+   Simula la base de datos relacional (20 tablas del diseño)
+   usando localStorage. Más adelante puede reemplazarse por
+   llamadas a la API REST (fetch) sin cambiar las vistas.
+   =========================================================== */
+
+// ---------- Utilidades de fecha ----------
+function isoDate(d = new Date()) { const z = d.getTimezoneOffset(); return new Date(d.getTime() - z * 60000).toISOString().slice(0, 10); }
+function isoNow() { const d = new Date(); const z = d.getTimezoneOffset(); return new Date(d.getTime() - z * 60000).toISOString().slice(0, 19); }
+function addDays(iso, n) { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return isoDate(d); }
+function daysBetween(a, b) { return Math.round((new Date(b + "T12:00:00") - new Date(a + "T12:00:00")) / 86400000); }
+const r2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+// ---------- Constantes del negocio ----------
+const C = {
+  IGV: 0.18,
+  ZONAS: ["Norte", "Centro", "Sur", "Este", "Oeste"],           // radio urbano de cobertura
+  CANALES: ["Llamada", "WhatsApp", "Web", "Presencial"],
+  PRIORIDADES: ["Normal", "Urgente", "Programado"],
+  PAGOS: ["Efectivo", "Transferencia", "Yape/Plin", "Tarjeta"],
+  FRANJAS: ["08:00 – 10:00", "10:00 – 12:00", "12:00 – 14:00", "14:00 – 17:00"],
+  ROLES: ["Administrador", "Supervisor", "Vendedor", "Almacenero", "Operario", "Chofer", "Cajero"],
+  CATEGORIAS: { LLENO: "Bidones llenos", VACIO_POR_LAVAR: "Vacíos por lavar", VACIO_EN_LAVADO: "Vacíos en lavado", VACIO_APTO: "Vacíos aptos", DESCARTE: "Descarte" },
+  ESTADOS_PEDIDO: ["Pendiente de Programación", "Programado", "En ruta", "Entregado", "Rechazado", "Reprogramado", "Cancelado"],
+  MAX_ENVASES_PRESTADOS: 10,   // RN-PO03
+  DIAS_MAX_PRESTAMO: 30,       // RN-PO03
+  DIAS_RECONTROL: 15,          // RN-PO01
+  PH: [6.5, 8.5], CLORO_MAX: 0.5, TDS_MAX: 500, UFC_MAX: 0,
+  DESCARTE_ALERTA: 0.05,       // RFN-01.3
+};
+// Permisos por módulo y rol: full = acceso completo, read = solo consulta
+const PERMISOS = {
+  Administrador: { pedidos: "full", inventario: "full", produccion: "full", logistica: "full", caja: "full", reportes: "full", usuarios: "full" },
+  Supervisor:    { pedidos: "read", inventario: "full", produccion: "read", logistica: "full", caja: "read", reportes: "full" },
+  Vendedor:      { pedidos: "full", inventario: "read", logistica: "read", reportes: "read" },
+  Almacenero:    { pedidos: "read", inventario: "full", produccion: "read", logistica: "read", reportes: "read" },
+  Operario:      { inventario: "read", produccion: "full" },
+  Chofer:        { pedidos: "read", logistica: "full", caja: "read" },
+  Cajero:        { pedidos: "read", caja: "full", reportes: "read" },
+};
+
+// ---------- Semilla de datos de demostración ----------
+function seed() {
+  const hoy = isoDate();
+  let s = 7; const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  const d = {
+    version: 1,
+    roles: C.ROLES.map((n, i) => ({ id_rol: i + 1, nombre: n })),
+    usuarios: [
+      { id_usuario: 1, rol: "Administrador", nombres: "Juan", apellidos: "Pérez", dni: "10000001", correo: "admin@aguapura.pe", password: "admin123", estado: true },
+      { id_usuario: 2, rol: "Supervisor", nombres: "Luis", apellidos: "Ramírez", dni: "10000002", correo: "logistica@aguapura.pe", password: "super123", estado: true },
+      { id_usuario: 3, rol: "Vendedor", nombres: "Carlos", apellidos: "Díaz", dni: "10000003", correo: "ventas@aguapura.pe", password: "ventas123", estado: true },
+      { id_usuario: 4, rol: "Almacenero", nombres: "Rosa", apellidos: "Medina", dni: "10000004", correo: "almacen@aguapura.pe", password: "almacen123", estado: true },
+      { id_usuario: 5, rol: "Operario", nombres: "Ana", apellidos: "Gómez", dni: "10000005", correo: "planta@aguapura.pe", password: "planta123", estado: true },
+      { id_usuario: 6, rol: "Chofer", nombres: "José", apellidos: "Ramírez", dni: "10000006", correo: "chofer@aguapura.pe", password: "chofer123", estado: true },
+      { id_usuario: 7, rol: "Chofer", nombres: "Mario", apellidos: "Salas", dni: "10000007", correo: "chofer2@aguapura.pe", password: "chofer123", estado: true },
+      { id_usuario: 8, rol: "Cajero", nombres: "María", apellidos: "Torres", dni: "10000008", correo: "caja@aguapura.pe", password: "caja123", estado: true },
+    ],
+    clientes: [
+      { id_cliente: 1, tipo_cliente: "Residencial", nombre: "María Quispe", doc_tipo: "DNI", doc_numero: "45871236", telefono: "987111222", correo: "", direccion: "Jr. Los Pinos 120", zona: "Norte", referencia: "Casa azul", horario: "08:00 – 10:00", estado: true },
+      { id_cliente: 2, tipo_cliente: "Comercial", nombre: "Oficinas Delta SAC", doc_tipo: "RUC", doc_numero: "20512345678", telefono: "987333444", correo: "compras@delta.pe", direccion: "Av. Los Álamos 123", zona: "Centro", referencia: "Piso 2", horario: "10:00 – 12:00", estado: true },
+      { id_cliente: 3, tipo_cliente: "Comercial", nombre: "Bodega San Martín", doc_tipo: "RUC", doc_numero: "20601234567", telefono: "987555666", correo: "", direccion: "Calle San Martín 88", zona: "Sur", referencia: "Frente al mercado", horario: "08:00 – 10:00", estado: true },
+      { id_cliente: 4, tipo_cliente: "Comercial", nombre: "Restaurante El Sol", doc_tipo: "RUC", doc_numero: "20456789012", telefono: "987777888", correo: "", direccion: "Av. Los Cedros 456", zona: "Centro", referencia: "Frente al parque", horario: "10:00 – 12:00", estado: true },
+      { id_cliente: 5, tipo_cliente: "Residencial", nombre: "Familia Rojas", doc_tipo: "DNI", doc_numero: "40123987", telefono: "987999000", correo: "", direccion: "Av. Sol 310", zona: "Este", referencia: "Portón negro", horario: "14:00 – 17:00", estado: true },
+      { id_cliente: 6, tipo_cliente: "Comercial", nombre: "Colegio Horizonte", doc_tipo: "RUC", doc_numero: "20345678901", telefono: "987123123", correo: "", direccion: "Av. Perú 900", zona: "Centro", referencia: "Puerta principal", horario: "08:00 – 10:00", estado: true },
+      { id_cliente: 7, tipo_cliente: "Comercial", nombre: "Farmacia Salud", doc_tipo: "RUC", doc_numero: "20567890123", telefono: "987456456", correo: "", direccion: "Jr. Lima 220", zona: "Centro", referencia: "", horario: "12:00 – 14:00", estado: true },
+      { id_cliente: 8, tipo_cliente: "Comercial", nombre: "Bodega Don Pepe", doc_tipo: "RUC", doc_numero: "20678901234", telefono: "987789789", correo: "", direccion: "Calle 8 N.º 45", zona: "Centro", referencia: "", horario: "08:00 – 10:00", estado: true },
+    ],
+    saldos: [
+      { id_cliente: 2, envases: 7, desde: addDays(hoy, -12) },
+      { id_cliente: 3, envases: 9, desde: addDays(hoy, -20) },
+      { id_cliente: 4, envases: 12, desde: addDays(hoy, -40) },   // supera RN-PO03
+      { id_cliente: 5, envases: 2, desde: addDays(hoy, -5) },
+    ],
+    productos: [
+      { id_producto: 1, codigo: "AGU-20L", nombre: "Agua purificada bidón 20 L", tipo: "Agua 20L", peso_kg: 20, precio: 12, stock_min: 100 },
+      { id_producto: 2, codigo: "ENV-20L", nombre: "Envase retornable 20 L", tipo: "Envase retornable", peso_kg: 1.2, precio: 25, stock_min: 0 },
+    ],
+    stock: [],
+    movimientos: [],
+    proveedores: [
+      { id_proveedor: 1, razon_social: "Tapas y Sellos SAC", ruc: "20111111111", contacto: "Pedro Luna", telefono: "999111111", correo: "ventas@tapasysellos.pe", categoria: "Tapas y sellos", condiciones: "Pago a 15 días", estado: true },
+      { id_proveedor: 2, razon_social: "Etiquetas Perú EIRL", ruc: "20222222222", contacto: "Carla Soto", telefono: "999222222", correo: "", categoria: "Etiquetas", condiciones: "Contado", estado: true },
+      { id_proveedor: 3, razon_social: "QuimiLimp SAC", ruc: "20333333333", contacto: "Raúl Vega", telefono: "999333333", correo: "", categoria: "Productos de limpieza", condiciones: "Pago a 30 días", estado: true },
+    ],
+    compras: [
+      { id_compra: 1, id_proveedor: 1, fecha: addDays(hoy, -10), descripcion: "2,000 tapas con sello termocontraíble", monto: 480, id_usuario: 1 },
+      { id_compra: 2, id_proveedor: 3, fecha: addDays(hoy, -6), descripcion: "Solución sanitizante de ozono/cloro (20 L)", monto: 215.5, id_usuario: 1 },
+    ],
+    pedidos: [], detalles: [], vehiculos: [
+      { id_vehiculo: 1, placa: "ABC-123", tipo: "Camión pequeño", capacidad: 80, estado: "Disponible" },
+      { id_vehiculo: 2, placa: "DEF-456", tipo: "Furgoneta", capacidad: 50, estado: "Disponible" },
+      { id_vehiculo: 3, placa: "GHI-789", tipo: "Motocarga", capacidad: 20, estado: "Disponible" },
+    ],
+    rutas: [], ruta_pedidos: [], pagos: [], comprobantes: [], cierres: [], recepciones: [], lotes: [], controles: [],
+    mantenimientos: [
+      { id: 1, fecha: addDays(hoy, -6), equipo: "Lavadora de bidones", tipo: "Cambio de solución sanitizante", detalle: "Se renovó la solución de ozono/cloro", id_usuario: 5 },
+      { id: 2, fecha: addDays(hoy, -20), equipo: "Sistema de ósmosis inversa", tipo: "Mantenimiento", detalle: "Cambio de membranas y filtros de carbón activado", id_usuario: 5 },
+    ],
+    tanque: { litros: 4200, capacidad: 6000 },
+    correlativos: { B001: 0, F001: 0 },
+  };
+  const mov = [];
+  const addMov = (o) => mov.push(Object.assign({ id_lote: null, id_hoja_ruta: null, obs: "", id_usuario: 4 }, o));
+  const rutaN = {};
+  // Historial de los últimos 7 días (ventas, rutas cerradas, lotes y movimientos)
+  for (let k = 7; k >= 1; k--) {
+    const f = addDays(hoy, -k);
+    const idR = d.rutas.length + 1;
+    const cod = "HR-" + f.replace(/-/g, "") + "-01";
+    const n = 3 + Math.floor(rnd() * 3);
+    let totalB = 0, entregadosB = 0, efectivo = 0, ords = 0;
+    const zona = C.ZONAS[k % 5];
+    for (let j = 0; j < n; j++) {
+      const cl = d.clientes[Math.floor(rnd() * d.clientes.length)];
+      const b = 2 + Math.floor(rnd() * 8);
+      const idP = d.pedidos.length + 1;
+      const rech = rnd() < 0.12;
+      const mp = C.PAGOS[rnd() < 0.55 ? 0 : (rnd() < 0.5 ? 2 : (rnd() < 0.5 ? 1 : 3))];
+      const total = r2(b * 12), neto = r2(total / (1 + C.IGV));
+      d.pedidos.push({ id_pedido: idP, id_cliente: cl.id_cliente, id_usuario: 3, fecha_pedido: f + "T08:" + String(10 + j * 4).padStart(2, "0") + ":00", canal: C.CANALES[j % 4], prioridad: "Normal", fecha_entrega: f, franja: C.FRANJAS[j % 4], direccion: cl.direccion, zona: cl.zona, modalidad_pago: mp, estado: rech ? "Rechazado" : "Entregado", subtotal: neto, igv: r2(total - neto), total, pago_verificado: true });
+      d.detalles.push({ id_detalle: d.detalles.length + 1, id_pedido: idP, id_producto: 1, cantidad: b, precio: 12, tipo_envase: "Intercambio", subtotal: total });
+      d.ruta_pedidos.push({ id: d.ruta_pedidos.length + 1, id_hoja_ruta: idR, id_pedido: idP, orden: ++ords, estado: rech ? "Rechazado" : "Entregado", motivo: rech ? "Cliente ausente" : "", envases_recibidos: rech ? 0 : b, hora: f + "T10:" + String(10 + j * 7).padStart(2, "0") + ":00" });
+      totalB += b;
+      if (!rech) {
+        entregadosB += b;
+        d.pagos.push({ id_pago: d.pagos.length + 1, id_pedido: idP, id_hoja_ruta: idR, monto: total, metodo: mp, referencia: mp === "Efectivo" ? "" : "OP-" + (1000 + idP), verificado: true, fecha_hora: f + "T10:" + String(15 + j * 7).padStart(2, "0") + ":00", id_usuario: 6 });
+        if (mp === "Efectivo") efectivo += total;
+        const ruc = cl.doc_tipo === "RUC", ser = ruc ? "F001" : "B001"; d.correlativos[ser]++;
+        d.comprobantes.push({ id_comprobante: d.comprobantes.length + 1, id_pedido: idP, tipo: ruc ? "Factura" : "Boleta", serie: ser, numero: d.correlativos[ser], fecha_emision: f + "T17:00:00", total, estado_sunat: "Aceptado" });
+      }
+    }
+    const desc = k === 4 ? 2 : Math.floor(rnd() * 2), apto = entregadosB - desc;
+    d.rutas.push({ id_hoja_ruta: idR, codigo: cod, fecha: f, zona, id_vehiculo: 1, id_chofer: 6, id_programador: 2, total_bidones: totalB, envases_esperados: entregadosB, estado: "Cerrada", hora_salida: f + "T08:30:00", hora_retorno: f + "T" + (12 + Math.floor(rnd() * 3)) + ":10:00" });
+    d.recepciones.push({ id_recepcion: d.recepciones.length + 1, id_hoja_ruta: idR, id_usuario: 4, fecha_hora: f + "T13:30:00", recibida: entregadosB, apto, descarte: desc, obs: "" });
+    const diff = k === 3 ? -5 : 0;
+    d.cierres.push({ id_cierre: d.cierres.length + 1, fecha: f, id_hoja_ruta: idR, id_chofer: 6, id_cajero: 8, esperado: r2(efectivo), entregado: r2(efectivo + diff), diferencia: diff, estado: "Cerrado", obs: diff ? "Faltante reportado por el chofer" : "" });
+    const cant = totalB + 6 + Math.floor(rnd() * 8);
+    d.lotes.push({ id_lote: d.lotes.length + 1, codigo: "LT-" + f.replace(/-/g, "") + "-01", fecha: f, hora_inicio: f + "T06:30:00", hora_fin: f + "T09:15:00", cantidad: cant, estado: "Aprobado", fecha_control: addDays(f, C.DIAS_RECONTROL), id_usuario: 5 });
+    d.controles.push({ id_control: d.controles.length + 1, id_lote: d.lotes.length, ph: +(7 + rnd() * 0.6).toFixed(1), cloro: 0.2, tds: Math.round(36 + rnd() * 8), ufc: 0, resultado: "Conforme", fecha_hora: f + "T09:20:00", id_usuario: 5 });
+    addMov({ id_producto: 2, categoria: "VACIO_APTO", tipo: "SALIDA", motivo: "PRODUCCION", cantidad: cant, id_lote: d.lotes.length, fecha_hora: f + "T06:35:00", id_usuario: 5, obs: "Consumo de envases aptos" });
+    addMov({ id_producto: 1, categoria: "LLENO", tipo: "ENTRADA", motivo: "PRODUCCION", cantidad: cant, id_lote: d.lotes.length, fecha_hora: f + "T09:25:00", id_usuario: 5 });
+    addMov({ id_producto: 1, categoria: "LLENO", tipo: "SALIDA", motivo: "DESPACHO", cantidad: totalB, id_hoja_ruta: idR, fecha_hora: f + "T08:30:00" });
+    addMov({ id_producto: 2, categoria: "VACIO_POR_LAVAR", tipo: "ENTRADA", motivo: "RETORNO", cantidad: apto, id_hoja_ruta: idR, fecha_hora: f + "T13:35:00" });
+    if (desc) addMov({ id_producto: 2, categoria: "DESCARTE", tipo: "ENTRADA", motivo: "RETORNO", cantidad: desc, id_hoja_ruta: idR, fecha_hora: f + "T13:36:00" });
+    addMov({ id_producto: 2, categoria: "VACIO_POR_LAVAR", tipo: "SALIDA", motivo: "LAVADO", cantidad: apto, fecha_hora: f + "T14:00:00" });
+    addMov({ id_producto: 2, categoria: "VACIO_APTO", tipo: "ENTRADA", motivo: "LAVADO", cantidad: apto, fecha_hora: f + "T14:30:00" });
+  }
+  // Stock actual objetivo y saldos calculados hacia atrás para que el kardex cuadre
+  const objetivo = { "1:LLENO": 312, "2:VACIO_POR_LAVAR": 85, "2:VACIO_EN_LAVADO": 0, "2:VACIO_APTO": 140, "2:DESCARTE": 12 };
+  mov.sort((a, b) => a.fecha_hora.localeCompare(b.fecha_hora));
+  const net = {}; mov.forEach(m => { const k = m.id_producto + ":" + m.categoria; net[k] = (net[k] || 0) + (m.tipo === "ENTRADA" ? m.cantidad : -m.cantidad); });
+  const run = {}; Object.keys(objetivo).forEach(k => run[k] = Math.max(0, objetivo[k] - (net[k] || 0)));
+  mov.forEach((m, i) => {
+    const k = m.id_producto + ":" + m.categoria;
+    run[k] += m.tipo === "ENTRADA" ? m.cantidad : -m.cantidad;
+    m.id_movimiento = i + 1; m.saldo = run[k];
+  });
+  d.movimientos = mov;
+  d.stock = Object.keys(objetivo).map((k, i) => ({ id_stock: i + 1, id_producto: +k.split(":")[0], categoria: k.split(":")[1], cantidad: run[k] }));
+  // Pedidos pendientes de hoy
+  const pend = [[1, 3, "Normal", "Efectivo"], [2, 10, "Urgente", "Efectivo"], [3, 6, "Programado", "Yape/Plin"], [7, 6, "Normal", "Efectivo"], [8, 8, "Normal", "Efectivo"], [5, 3, "Normal", "Efectivo"], [6, 20, "Normal", "Transferencia"]];
+  pend.forEach(([idc, b, pr, mp], i) => {
+    const cl = d.clientes.find(c => c.id_cliente === idc), idP = d.pedidos.length + 1, total = r2(b * 12), neto = r2(total / (1 + C.IGV));
+    d.pedidos.push({ id_pedido: idP, id_cliente: idc, id_usuario: 3, fecha_pedido: hoy + "T07:" + String(10 + i * 5).padStart(2, "0") + ":00", canal: C.CANALES[i % 4], prioridad: pr, fecha_entrega: hoy, franja: cl.horario, direccion: cl.direccion, zona: cl.zona, modalidad_pago: mp, estado: "Pendiente de Programación", subtotal: neto, igv: r2(total - neto), total, pago_verificado: false });
+    d.detalles.push({ id_detalle: d.detalles.length + 1, id_pedido: idP, id_producto: 1, cantidad: b, precio: 12, tipo_envase: "Intercambio", subtotal: total });
+  });
+  return d;
+}
+
+// ---------- Almacén de datos ----------
+const KEY = "aguapura_db_v1";
+const DB = {
+  d: null,
+  load() {
+    try { const raw = localStorage.getItem(KEY); this.d = raw ? JSON.parse(raw) : null; } catch (e) { this.d = null; }
+    if (!this.d) { this.d = seed(); this.save(); }
+    return this.d;
+  },
+  save() { try { localStorage.setItem(KEY, JSON.stringify(this.d)); } catch (e) { console.warn("No se pudo guardar", e); } },
+  reset() { localStorage.removeItem(KEY); this.d = seed(); this.save(); },
+  nextId(tabla, campo) { return this.d[tabla].reduce((m, x) => Math.max(m, x[campo] || 0), 0) + 1; },
+};
+DB.load();
+
+// ---------- Consultas auxiliares ----------
+const Q = {
+  user: id => DB.d.usuarios.find(u => u.id_usuario === id),
+  userName: id => { const u = Q.user(id); return u ? u.nombres + " " + u.apellidos : "—"; },
+  cliente: id => DB.d.clientes.find(c => c.id_cliente === id),
+  producto: id => DB.d.productos.find(p => p.id_producto === id),
+  pedido: id => DB.d.pedidos.find(p => p.id_pedido === id),
+  pedCod: id => "P-" + String(id).padStart(4, "0"),
+  ruta: id => DB.d.rutas.find(r => r.id_hoja_ruta === id),
+  vehiculo: id => DB.d.vehiculos.find(v => v.id_vehiculo === id),
+  items: idPedido => DB.d.detalles.filter(x => x.id_pedido === idPedido),
+  bidones: idPedido => Q.items(idPedido).filter(x => x.id_producto === 1).reduce((a, x) => a + x.cantidad, 0),
+  intercambio: idPedido => Q.items(idPedido).filter(x => x.id_producto === 1 && x.tipo_envase === "Intercambio").reduce((a, x) => a + x.cantidad, 0),
+  stock: (prod, cat) => { const s = DB.d.stock.find(x => x.id_producto === prod && x.categoria === cat); return s ? s.cantidad : 0; },
+  saldo: idc => { const s = DB.d.saldos.find(x => x.id_cliente === idc); return s ? s.envases : 0; },
+  moroso: idc => { const s = DB.d.saldos.find(x => x.id_cliente === idc); return !!(s && s.envases > C.MAX_ENVASES_PRESTADOS && s.desde && daysBetween(s.desde, isoDate()) > C.DIAS_MAX_PRESTAMO); },
+  pagado: idPedido => r2(DB.d.pagos.filter(p => p.id_pedido === idPedido).reduce((a, p) => a + p.monto, 0)),
+  rutaPedidos: idRuta => DB.d.ruta_pedidos.filter(x => x.id_hoja_ruta === idRuta).sort((a, b) => a.orden - b.orden),
+  rutaDelPedido: idPedido => { const l = DB.d.ruta_pedidos.filter(x => x.id_pedido === idPedido); return l.length ? l[l.length - 1] : null; },
+  // bidones reservados por pedidos aún no cargados (para no sobrevender)
+  comprometidos() {
+    let t = 0;
+    DB.d.pedidos.forEach(p => {
+      if (!["Pendiente de Programación", "Programado", "Reprogramado"].includes(p.estado)) return;
+      const rp = Q.rutaDelPedido(p.id_pedido);
+      if (p.estado === "Programado" && rp) { const r = Q.ruta(rp.id_hoja_ruta); if (r && ["Cargada", "En ruta", "Cerrada"].includes(r.estado)) return; }
+      t += Q.bidones(p.id_pedido);
+    });
+    return t;
+  },
+  disponible: () => Q.stock(1, "LLENO") - Q.comprometidos(),
+  tieneRecepcion: idRuta => DB.d.recepciones.some(x => x.id_hoja_ruta === idRuta),
+  tieneCierre: idRuta => DB.d.cierres.some(x => x.id_hoja_ruta === idRuta),
+};
+
+// ---------- Servicios de negocio (reglas RN / RFN) ----------
+const Svc = {
+  fail(msg) { throw new Error(msg); },
+
+  can(user, modulo) { return (PERMISOS[user.rol] || {})[modulo] || null; },
+  need(user, modulo) { if (Svc.can(user, modulo) !== "full") Svc.fail("Su rol (" + user.rol + ") no tiene permiso para realizar esta acción."); },
+
+  login(correo, pass) {
+    const u = DB.d.usuarios.find(x => x.correo.toLowerCase() === String(correo).trim().toLowerCase() && x.password === pass);
+    if (!u) return null;
+    if (!u.estado) Svc.fail("La cuenta está desactivada. Comuníquese con el administrador.");
+    return u;
+  },
+
+  // ----- Inventario / Kardex (RFN-04.x) -----
+  mov({ prod, cat, tipo, motivo, cant, lote = null, ruta = null, obs = "", user }) {
+    cant = Math.round(Number(cant));
+    if (!(cant > 0)) Svc.fail("La cantidad debe ser mayor que cero.");
+    let s = DB.d.stock.find(x => x.id_producto === prod && x.categoria === cat);
+    if (!s) { s = { id_stock: DB.nextId("stock", "id_stock"), id_producto: prod, categoria: cat, cantidad: 0 }; DB.d.stock.push(s); }
+    const nuevo = s.cantidad + (tipo === "ENTRADA" ? cant : -cant);
+    if (nuevo < 0) Svc.fail("Stock insuficiente en «" + C.CATEGORIAS[cat] + "»: hay " + s.cantidad + " y se requieren " + cant + ".");
+    s.cantidad = nuevo;
+    DB.d.movimientos.push({ id_movimiento: DB.nextId("movimientos", "id_movimiento"), id_producto: prod, categoria: cat, tipo, motivo, cantidad: cant, id_lote: lote, id_hoja_ruta: ruta, id_usuario: user ? user.id_usuario : 1, fecha_hora: isoNow(), obs, saldo: nuevo });
+  },
+  ajustar({ prod, cat, tipo, motivo, cant, obs }, user) {
+    if (!["Administrador", "Supervisor"].includes(user.rol)) Svc.fail("Solo el Administrador o el Supervisor pueden autorizar ajustes de inventario.");
+    if (!String(obs || "").trim()) Svc.fail("Debe justificar el ajuste (rotura, robo, merma, etc.).");
+    Svc.mov({ prod, cat, tipo, motivo, cant, obs, user }); DB.save();
+  },
+  lavar(cant, user) {
+    Svc.need(user, "inventario");
+    Svc.mov({ prod: 2, cat: "VACIO_POR_LAVAR", tipo: "SALIDA", motivo: "LAVADO", cant, obs: "Enviados a lavadora", user });
+    Svc.mov({ prod: 2, cat: "VACIO_APTO", tipo: "ENTRADA", motivo: "LAVADO", cant, obs: "Lavados y desinfectados (RN-OP03)", user });
+    DB.save();
+  },
+  mantenimiento(m, user) {
+    Svc.need(user, "inventario");
+    if (!m.detalle.trim()) Svc.fail("Describa el mantenimiento o cambio realizado.");
+    DB.d.mantenimientos.push({ id: DB.nextId("mantenimientos", "id"), fecha: isoDate(), equipo: m.equipo, tipo: m.tipo, detalle: m.detalle, id_usuario: user.id_usuario }); DB.save();
+  },
+  recepcion({ rutaId, recibida, descarte, obs }, user) {
+    Svc.need(user, "inventario");
+    const r = Q.ruta(rutaId); if (!r) Svc.fail("Seleccione una hoja de ruta.");
+    if (r.estado !== "Cerrada") Svc.fail("La hoja de ruta debe estar cerrada antes de recibir los envases.");
+    if (Q.tieneRecepcion(rutaId)) Svc.fail("Esta hoja de ruta ya tiene una recepción registrada.");
+    recibida = +recibida; descarte = +descarte || 0;
+    if (!(recibida >= 0) || descarte < 0 || descarte > recibida) Svc.fail("Las cantidades no son válidas (el descarte no puede superar lo recibido).");
+    const apto = recibida - descarte;
+    if (apto > 0) Svc.mov({ prod: 2, cat: "VACIO_POR_LAVAR", tipo: "ENTRADA", motivo: "RETORNO", cant: apto, ruta: rutaId, obs: "Recepción de envases", user });
+    if (descarte > 0) Svc.mov({ prod: 2, cat: "DESCARTE", tipo: "ENTRADA", motivo: "RETORNO", cant: descarte, ruta: rutaId, obs: obs || "Descarte por daño/contaminación", user });
+    DB.d.recepciones.push({ id_recepcion: DB.nextId("recepciones", "id_recepcion"), id_hoja_ruta: rutaId, id_usuario: user.id_usuario, fecha_hora: isoNow(), recibida, apto, descarte, obs: obs || "" });
+    DB.save();
+    return { alerta: recibida > 0 && descarte / recibida > C.DESCARTE_ALERTA, pct: recibida ? descarte / recibida : 0 };
+  },
+
+  // ----- Producción y calidad (RFN-02.x) -----
+  evaluarCalidad(m) {
+    const errs = [];
+    if (!(m.ph >= C.PH[0] && m.ph <= C.PH[1])) errs.push("pH fuera del rango permitido (" + C.PH[0] + " a " + C.PH[1] + ")");
+    if (m.cloro > C.CLORO_MAX) errs.push("cloro residual superior a " + C.CLORO_MAX + " mg/L");
+    if (m.tds > C.TDS_MAX) errs.push("TDS superior a " + C.TDS_MAX + " mg/L");
+    if (m.ufc > C.UFC_MAX) errs.push("presencia de microorganismos (UFC > " + C.UFC_MAX + ")");
+    return errs;
+  },
+  crearLote(m, user) {
+    Svc.need(user, "produccion");
+    if (!(m.cantidad > 0)) Svc.fail("Ingrese la cantidad de bidones producidos.");
+    if ([m.ph, m.cloro, m.tds, m.ufc].some(v => isNaN(v))) Svc.fail("Registre todas las mediciones de calidad (el lote no puede pasar a inventario sin ellas).");
+    if (!m.inicio || !m.fin || m.fin <= m.inicio) Svc.fail("La hora de fin debe ser posterior a la hora de inicio.");
+    const errs = Svc.evaluarCalidad(m), ok = errs.length === 0;
+    if (ok) {
+      if (Q.stock(2, "VACIO_APTO") < m.cantidad) Svc.fail("No hay envases desinfectados suficientes (aptos: " + Q.stock(2, "VACIO_APTO") + "). Los envases deben pasar por lavado antes del llenado (RN-OP03).");
+      if (DB.d.tanque.litros < m.cantidad * 20) Svc.fail("Agua purificada insuficiente en tanques (" + DB.d.tanque.litros + " L). Reponga el tanque.");
+    }
+    const hoy = isoDate();
+    const n = DB.d.lotes.filter(l => l.fecha === hoy).length + 1;
+    const lote = { id_lote: DB.nextId("lotes", "id_lote"), codigo: "LT-" + hoy.replace(/-/g, "") + "-" + String(n).padStart(2, "0"), fecha: hoy, hora_inicio: hoy + "T" + m.inicio + ":00", hora_fin: hoy + "T" + m.fin + ":00", cantidad: m.cantidad, estado: ok ? "Aprobado" : "Rechazado", fecha_control: addDays(hoy, C.DIAS_RECONTROL), id_usuario: user.id_usuario };
+    DB.d.lotes.push(lote);
+    DB.d.controles.push({ id_control: DB.nextId("controles", "id_control"), id_lote: lote.id_lote, ph: m.ph, cloro: m.cloro, tds: m.tds, ufc: m.ufc, resultado: ok ? "Conforme" : "No conforme", fecha_hora: isoNow(), id_usuario: user.id_usuario, motivos: errs.join("; ") });
+    if (ok) {
+      Svc.mov({ prod: 2, cat: "VACIO_APTO", tipo: "SALIDA", motivo: "PRODUCCION", cant: m.cantidad, lote: lote.id_lote, obs: "Consumo de envases aptos", user });
+      Svc.mov({ prod: 1, cat: "LLENO", tipo: "ENTRADA", motivo: "PRODUCCION", cant: m.cantidad, lote: lote.id_lote, obs: "Lote " + lote.codigo, user });
+      DB.d.tanque.litros -= m.cantidad * 20;
+    }
+    DB.save();
+    return { lote, errs };
+  },
+  reponerTanque(user) { Svc.need(user, "produccion"); DB.d.tanque.litros = DB.d.tanque.capacidad; DB.save(); },
+
+  // ----- Pedidos (RFN-03.x) -----
+  calcTotales(items) {
+    const total = r2(items.reduce((a, i) => a + i.cantidad * i.precio, 0)), neto = r2(total / (1 + C.IGV));
+    return { total, subtotal: neto, igv: r2(total - neto) };
+  },
+  validarPedido(p, items, excluirId = null) {
+    const cl = Q.cliente(p.id_cliente); if (!cl) Svc.fail("Seleccione un cliente registrado.");
+    if (!cl.estado) Svc.fail("El cliente está suspendido (RN-PO03). Regularice sus envases en préstamo para continuar.");
+    if (!C.ZONAS.includes(p.zona)) Svc.fail("La dirección está fuera del radio urbano de cobertura. Zonas atendidas: " + C.ZONAS.join(", ") + ".");
+    if (!p.direccion.trim()) Svc.fail("Ingrese la dirección de entrega.");
+    if (!p.fecha_entrega) Svc.fail("Indique la fecha de entrega.");
+    if (!items.length) Svc.fail("Agregue al menos un producto al pedido.");
+    items.forEach(i => { if (!(i.cantidad > 0)) Svc.fail("Las cantidades deben ser mayores que cero."); });
+    const b = items.filter(i => i.id_producto === 1).reduce((a, i) => a + i.cantidad, 0);
+    let disp = Q.disponible();
+    if (excluirId) disp += Q.bidones(excluirId);
+    if (b > disp) Svc.fail("Stock insuficiente de bidones llenos: disponibles " + disp + ", solicitados " + b + ".");
+    const e = items.filter(i => i.id_producto === 2).reduce((a, i) => a + i.cantidad, 0);
+    if (e > Q.stock(2, "VACIO_APTO")) Svc.fail("No hay envases nuevos suficientes para la venta (aptos: " + Q.stock(2, "VACIO_APTO") + ").");
+  },
+  crearPedido(p, items, user) {
+    Svc.need(user, "pedidos");
+    Svc.validarPedido(p, items);
+    const t = Svc.calcTotales(items), id = DB.nextId("pedidos", "id_pedido");
+    DB.d.pedidos.push(Object.assign({ id_pedido: id, id_usuario: user.id_usuario, fecha_pedido: isoNow(), estado: "Pendiente de Programación", pago_verificado: false }, p, t));
+    items.forEach(i => DB.d.detalles.push({ id_detalle: DB.nextId("detalles", "id_detalle"), id_pedido: id, id_producto: i.id_producto, cantidad: i.cantidad, precio: i.precio, tipo_envase: i.tipo_envase, subtotal: r2(i.cantidad * i.precio) }));
+    DB.save(); return id;
+  },
+  editarPedido(id, cambios, user) {
+    Svc.need(user, "pedidos");
+    const p = Q.pedido(id); if (p.estado !== "Pendiente de Programación") Svc.fail("Solo se pueden modificar pedidos pendientes de programación.");
+    if (!C.ZONAS.includes(cambios.zona)) Svc.fail("La zona está fuera del radio urbano de cobertura.");
+    Object.assign(p, cambios); DB.save();
+  },
+  cancelarPedido(id, user) {
+    Svc.need(user, "pedidos");
+    const p = Q.pedido(id);
+    if (!["Pendiente de Programación", "Programado", "Reprogramado"].includes(p.estado)) Svc.fail("El pedido ya no puede cancelarse (estado: " + p.estado + ").");
+    const rp = Q.rutaDelPedido(id);
+    if (p.estado === "Programado" && rp) {
+      const r = Q.ruta(rp.id_hoja_ruta);
+      if (r.estado !== "Generada") Svc.fail("El pedido pertenece a una ruta ya cargada. Debe marcarse como rechazado en la entrega.");
+      DB.d.ruta_pedidos = DB.d.ruta_pedidos.filter(x => x !== rp);
+      r.total_bidones -= Q.bidones(id); r.envases_esperados -= Q.intercambio(id);
+    }
+    p.estado = "Cancelado"; DB.save();
+  },
+  verificarPago(idPedido, ref, user) {
+    if (!["Administrador", "Cajero"].includes(user.rol)) Svc.fail("Solo caja puede verificar pagos.");
+    const p = Q.pedido(idPedido);
+    if (!p.pago_verificado) {
+      p.pago_verificado = true;
+      if (Q.pagado(idPedido) < p.total) DB.d.pagos.push({ id_pago: DB.nextId("pagos", "id_pago"), id_pedido: idPedido, id_hoja_ruta: null, monto: r2(p.total - Q.pagado(idPedido)), metodo: p.modalidad_pago, referencia: ref || "", verificado: true, fecha_hora: isoNow(), id_usuario: user.id_usuario });
+    }
+    DB.save();
+  },
+
+  // ----- Rutas y entregas (RFN-05.x) -----
+  pedidosPlanificables: () => DB.d.pedidos.filter(p => ["Pendiente de Programación", "Reprogramado"].includes(p.estado)),
+  crearRuta({ zona, vehiculoId, choferId, pedidoIds }, user) {
+    Svc.need(user, "logistica");
+    if (!pedidoIds.length) Svc.fail("Seleccione al menos un pedido.");
+    if (pedidoIds.length > 20) Svc.fail("Una hoja de ruta admite hasta 20 pedidos.");
+    const v = Q.vehiculo(vehiculoId); if (!v) Svc.fail("Seleccione un vehículo.");
+    const ch = Q.user(choferId); if (!ch) Svc.fail("Seleccione un chofer.");
+    // RN-OP04: no reasignar sin liquidar la ruta previa
+    DB.d.rutas.forEach(r => {
+      if (r.id_vehiculo !== vehiculoId && r.id_chofer !== choferId) return;
+      if (r.estado !== "Cerrada") Svc.fail("El vehículo o el chofer tiene la hoja de ruta " + r.codigo + " sin cerrar (RN-OP04).");
+      if (!Q.tieneCierre(r.id_hoja_ruta) || !Q.tieneRecepcion(r.id_hoja_ruta)) Svc.fail("La ruta " + r.codigo + " aún no se liquida: falta la recepción de envases o el cierre de caja (RN-OP04).");
+    });
+    if (v.estado === "Mantenimiento") Svc.fail("El vehículo está en mantenimiento.");
+    let total = 0, esp = 0;
+    pedidoIds.forEach(id => {
+      const p = Q.pedido(id);
+      if (!["Pendiente de Programación", "Reprogramado"].includes(p.estado)) Svc.fail("El pedido " + Q.pedCod(id) + " ya no está disponible para programar.");
+      if (p.modalidad_pago === "Transferencia" && !p.pago_verificado) Svc.fail("El pedido " + Q.pedCod(id) + " es por transferencia anticipada y el pago aún no está verificado (RN-PO02).");
+      if (p.zona !== zona) Svc.fail("El pedido " + Q.pedCod(id) + " pertenece a la zona " + p.zona + ", no a " + zona + ".");
+      total += Q.bidones(id); esp += Q.intercambio(id);
+    });
+    if (total > v.capacidad) Svc.fail("Excede el límite de " + v.capacidad + " bidones del vehículo (" + total + " solicitados). No se puede generar la ruta (RN-OP02).");
+    const hoy = isoDate(), n = DB.d.rutas.filter(r => r.fecha === hoy).length + 1;
+    const id = DB.nextId("rutas", "id_hoja_ruta");
+    DB.d.rutas.push({ id_hoja_ruta: id, codigo: "HR-" + hoy.replace(/-/g, "") + "-" + String(n).padStart(2, "0"), fecha: hoy, zona, id_vehiculo: vehiculoId, id_chofer: choferId, id_programador: user.id_usuario, total_bidones: total, envases_esperados: esp, estado: "Generada", hora_salida: null, hora_retorno: null });
+    pedidoIds.forEach((pid, i) => { DB.d.ruta_pedidos.push({ id: DB.nextId("ruta_pedidos", "id"), id_hoja_ruta: id, id_pedido: pid, orden: i + 1, estado: "Pendiente", motivo: "", envases_recibidos: 0, hora: null }); Q.pedido(pid).estado = "Programado"; });
+    DB.save(); return id;
+  },
+  cargarRuta(id, user) {
+    Svc.need(user, "logistica");
+    const r = Q.ruta(id); if (r.estado !== "Generada") Svc.fail("La ruta ya fue cargada.");
+    // todo o nada: se validan existencias antes de mover
+    let b = 0, e = 0; Q.rutaPedidos(id).forEach(rp => Q.items(rp.id_pedido).forEach(i => { if (i.id_producto === 1) b += i.cantidad; else e += i.cantidad; }));
+    if (Q.stock(1, "LLENO") < b) Svc.fail("Stock insuficiente de bidones llenos para cargar (hay " + Q.stock(1, "LLENO") + ", se necesitan " + b + ").");
+    if (e > Q.stock(2, "VACIO_APTO")) Svc.fail("No hay envases aptos suficientes para la venta.");
+    Svc.mov({ prod: 1, cat: "LLENO", tipo: "SALIDA", motivo: "DESPACHO", cant: b, ruta: id, obs: "Carga de " + r.codigo, user });
+    if (e > 0) Svc.mov({ prod: 2, cat: "VACIO_APTO", tipo: "SALIDA", motivo: "DESPACHO", cant: e, ruta: id, obs: "Envases nuevos vendidos", user });
+    r.estado = "Cargada"; DB.save();
+  },
+  iniciarRuta(id, user) {
+    Svc.need(user, "logistica");
+    const r = Q.ruta(id); if (r.estado !== "Cargada") Svc.fail("Primero debe cargar el vehículo.");
+    r.estado = "En ruta"; r.hora_salida = isoNow(); Q.vehiculo(r.id_vehiculo).estado = "En ruta";
+    Q.rutaPedidos(id).forEach(rp => Q.pedido(rp.id_pedido).estado = "En ruta");
+    DB.save();
+  },
+  entrega({ rutaId, pedidoId, estado, envases, motivo, monto }, user) {
+    Svc.need(user, "logistica");
+    const r = Q.ruta(rutaId); if (r.estado !== "En ruta") Svc.fail("La ruta no está en curso.");
+    if (user.rol === "Chofer" && r.id_chofer !== user.id_usuario) Svc.fail("Esta hoja de ruta pertenece a otro chofer.");
+    const rp = Q.rutaPedidos(rutaId).find(x => x.id_pedido === pedidoId), p = Q.pedido(pedidoId);
+    if (rp.estado !== "Pendiente") Svc.fail("Esta parada ya tiene un estado final.");
+    if (estado !== "Entregado" && !String(motivo || "").trim()) Svc.fail("Indique el motivo de la no entrega.");
+    rp.estado = estado; rp.motivo = estado === "Entregado" ? "" : motivo; rp.hora = isoNow();
+    if (estado === "Entregado") {
+      envases = Math.max(0, Math.round(+envases || 0)); rp.envases_recibidos = envases;
+      p.estado = "Entregado";
+      // saldo de envases prestados del cliente (RFN-04.2, RN-OP01)
+      const entregados = Q.items(pedidoId).filter(i => i.id_producto === 1 && i.tipo_envase !== "Venta envase").reduce((a, i) => a + i.cantidad, 0);
+      const delta = entregados - envases;
+      let s = DB.d.saldos.find(x => x.id_cliente === p.id_cliente);
+      if (!s) { s = { id_cliente: p.id_cliente, envases: 0, desde: null }; DB.d.saldos.push(s); }
+      s.envases = Math.max(0, s.envases + delta);
+      if (s.envases > 0 && !s.desde) s.desde = isoDate(); if (s.envases === 0) s.desde = null;
+      // pago (RFN-06.1)
+      const pend = r2(p.total - Q.pagado(pedidoId));
+      if (pend > 0) DB.d.pagos.push({ id_pago: DB.nextId("pagos", "id_pago"), id_pedido: pedidoId, id_hoja_ruta: rutaId, monto: r2(Math.min(pend, monto > 0 ? +monto : pend)), metodo: p.modalidad_pago, referencia: "", verificado: true, fecha_hora: isoNow(), id_usuario: user.id_usuario });
+      p.pago_verificado = true;
+    } else {
+      p.estado = estado;
+    }
+    DB.save();
+  },
+  cerrarRuta(id, user) {
+    Svc.need(user, "logistica");
+    const r = Q.ruta(id); if (r.estado !== "En ruta") Svc.fail("Solo se puede cerrar una ruta en curso.");
+    const pend = Q.rutaPedidos(id).filter(x => x.estado === "Pendiente");
+    if (pend.length) Svc.fail("No se puede cerrar: faltan estados finales en " + pend.length + " pedido(s) (" + pend.map(x => Q.pedCod(x.id_pedido)).join(", ") + ").");
+    // lo no entregado regresa a planta
+    Q.rutaPedidos(id).filter(x => x.estado !== "Entregado").forEach(rp => Q.items(rp.id_pedido).forEach(i => {
+      if (i.id_producto === 1) Svc.mov({ prod: 1, cat: "LLENO", tipo: "ENTRADA", motivo: "RETORNO", cant: i.cantidad, ruta: id, obs: "No entregado: " + Q.pedCod(rp.id_pedido), user });
+      else Svc.mov({ prod: 2, cat: "VACIO_APTO", tipo: "ENTRADA", motivo: "RETORNO", cant: i.cantidad, ruta: id, obs: "Envase no entregado", user });
+    }));
+    r.envases_esperados = Q.rutaPedidos(id).filter(x => x.estado === "Entregado").reduce((a, x) => a + Q.intercambio(x.id_pedido), 0);
+    r.estado = "Cerrada"; r.hora_retorno = isoNow(); Q.vehiculo(r.id_vehiculo).estado = "Disponible";
+    DB.save();
+  },
+
+  // ----- Caja y finanzas (RFN-06.x) -----
+  registrarPago({ pedidoId, monto, metodo, ref }, user) {
+    Svc.need(user, "caja");
+    const p = Q.pedido(pedidoId); monto = +monto;
+    if (!(monto > 0)) Svc.fail("Ingrese un monto mayor que cero.");
+    if (monto > r2(p.total - Q.pagado(pedidoId)) + 0.001) Svc.fail("El monto supera el saldo pendiente del pedido.");
+    DB.d.pagos.push({ id_pago: DB.nextId("pagos", "id_pago"), id_pedido: pedidoId, id_hoja_ruta: null, monto: r2(monto), metodo, referencia: ref || "", verificado: metodo === "Efectivo", fecha_hora: isoNow(), id_usuario: user.id_usuario });
+    DB.save();
+  },
+  emitirComprobante(pedidoId, user) {
+    Svc.need(user, "caja");
+    const p = Q.pedido(pedidoId);
+    if (p.estado !== "Entregado") Svc.fail("Solo se emiten comprobantes de pedidos entregados.");
+    if (Q.pagado(pedidoId) < p.total - 0.001) Svc.fail("El pedido tiene saldo pendiente de pago.");
+    if (DB.d.comprobantes.some(c => c.id_pedido === pedidoId && c.estado_sunat !== "Anulado")) Svc.fail("El pedido ya tiene comprobante.");
+    const cl = Q.cliente(p.id_cliente), ruc = cl.doc_tipo === "RUC", ser = ruc ? "F001" : "B001";
+    DB.d.correlativos[ser]++;
+    DB.d.comprobantes.push({ id_comprobante: DB.nextId("comprobantes", "id_comprobante"), id_pedido: pedidoId, tipo: ruc ? "Factura" : "Boleta", serie: ser, numero: DB.d.correlativos[ser], fecha_emision: isoNow(), total: p.total, estado_sunat: "Aceptado" });
+    DB.save();
+  },
+  esperadoEfectivo: idRuta => r2(DB.d.pagos.filter(p => p.id_hoja_ruta === idRuta && p.metodo === "Efectivo").reduce((a, p) => a + p.monto, 0)),
+  cerrarCaja({ rutaId, entregado, obs }, user) {
+    Svc.need(user, "caja");
+    const r = Q.ruta(rutaId); if (!r) Svc.fail("Seleccione una hoja de ruta.");
+    if (r.estado !== "Cerrada") Svc.fail("La hoja de ruta debe estar cerrada para liquidarla.");
+    if (Q.tieneCierre(rutaId)) Svc.fail("Esta liquidación ya está cerrada y no puede modificarse.");
+    entregado = +entregado; if (isNaN(entregado) || entregado < 0) Svc.fail("Ingrese el efectivo entregado por el chofer.");
+    const esperado = Svc.esperadoEfectivo(rutaId), dif = r2(entregado - esperado);
+    if (dif !== 0 && !String(obs || "").trim()) Svc.fail("Hay un descuadre de " + dif.toFixed(2) + ". Escriba la justificación para cerrar la caja.");
+    DB.d.cierres.push({ id_cierre: DB.nextId("cierres", "id_cierre"), fecha: isoDate(), id_hoja_ruta: rutaId, id_chofer: r.id_chofer, id_cajero: user.id_usuario, esperado, entregado: r2(entregado), diferencia: dif, estado: "Cerrado", obs: obs || "" });
+    DB.save();
+  },
+
+  // ----- Maestros -----
+  guardarCliente(c, user) {
+    Svc.need(user, "pedidos");
+    if (!c.nombre.trim()) Svc.fail("Ingrese el nombre o razón social.");
+    if (c.doc_tipo === "DNI" && !/^\d{8}$/.test(c.doc_numero)) Svc.fail("El DNI debe tener 8 dígitos.");
+    if (c.doc_tipo === "RUC" && !/^\d{11}$/.test(c.doc_numero)) Svc.fail("El RUC debe tener 11 dígitos.");
+    if (!/^\d{6,15}$/.test(c.telefono)) Svc.fail("Ingrese un teléfono válido (solo números).");
+    if (!c.direccion.trim()) Svc.fail("Ingrese la dirección.");
+    if (DB.d.clientes.some(x => x.doc_numero === c.doc_numero && x.id_cliente !== c.id_cliente)) Svc.fail("Ya existe un cliente con ese documento.");
+    if (c.id_cliente) Object.assign(Q.cliente(c.id_cliente), c);
+    else { c.id_cliente = DB.nextId("clientes", "id_cliente"); c.estado = true; DB.d.clientes.push(c); }
+    DB.save(); return c.id_cliente;
+  },
+  guardarProveedor(p, user) {
+    Svc.need(user, "pedidos");
+    if (!p.razon_social.trim()) Svc.fail("Ingrese la razón social.");
+    if (!/^\d{11}$/.test(p.ruc)) Svc.fail("El RUC debe tener 11 dígitos.");
+    if (DB.d.proveedores.some(x => x.ruc === p.ruc && x.id_proveedor !== p.id_proveedor)) Svc.fail("Ya existe un proveedor con ese RUC.");
+    if (p.id_proveedor) Object.assign(DB.d.proveedores.find(x => x.id_proveedor === p.id_proveedor), p);
+    else { p.id_proveedor = DB.nextId("proveedores", "id_proveedor"); p.estado = true; DB.d.proveedores.push(p); }
+    DB.save();
+  },
+  guardarCompra(c, user) {
+    Svc.need(user, "pedidos");
+    if (!c.descripcion.trim()) Svc.fail("Describa los insumos comprados.");
+    if (!(c.monto >= 0)) Svc.fail("Ingrese un monto válido.");
+    DB.d.compras.push({ id_compra: DB.nextId("compras", "id_compra"), id_proveedor: c.id_proveedor, fecha: c.fecha || isoDate(), descripcion: c.descripcion, monto: r2(c.monto), id_usuario: user.id_usuario }); DB.save();
+  },
+  guardarUsuario(u, user) {
+    Svc.need(user, "usuarios");
+    if (!/^\d{8}$/.test(u.dni)) Svc.fail("El DNI debe tener 8 dígitos.");
+    if (!/^\S+@\S+\.\S+$/.test(u.correo)) Svc.fail("Ingrese un correo válido.");
+    if (!u.id_usuario && u.password.length < 6) Svc.fail("La contraseña debe tener al menos 6 caracteres.");
+    if (DB.d.usuarios.some(x => (x.correo === u.correo || x.dni === u.dni) && x.id_usuario !== u.id_usuario)) Svc.fail("Ya existe un usuario con ese correo o DNI.");
+    if (u.id_usuario) { const o = Q.user(u.id_usuario); if (!u.password) delete u.password; Object.assign(o, u); }
+    else { u.id_usuario = DB.nextId("usuarios", "id_usuario"); u.estado = true; DB.d.usuarios.push(u); }
+    DB.save();
+  },
+  guardarVehiculo(v, user) {
+    Svc.need(user, "logistica");
+    if (!/^[A-Z0-9]{3}-?[A-Z0-9]{3}$/i.test(v.placa)) Svc.fail("Ingrese una placa válida (ej. ABC-123).");
+    if (!(v.capacidad > 0)) Svc.fail("La capacidad debe ser mayor que cero.");
+    if (DB.d.vehiculos.some(x => x.placa.toUpperCase() === v.placa.toUpperCase())) Svc.fail("Ya existe un vehículo con esa placa.");
+    DB.d.vehiculos.push({ id_vehiculo: DB.nextId("vehiculos", "id_vehiculo"), placa: v.placa.toUpperCase(), tipo: v.tipo, capacidad: v.capacidad, estado: "Disponible" }); DB.save();
+  },
+};
+
+/* ====== ui.js ====== */
+/* ===========================================================
+   AguaPura · Utilidades de interfaz
+   =========================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = n => "S/ " + Number(n || 0).toLocaleString("es-PE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const num = n => Number(n || 0).toLocaleString("es-PE");
+const fdate = s => { if (!s) return "—"; const [y, m, d] = s.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
+const ftime = s => (s && s.length > 10) ? s.slice(11, 16) : "";
+const fdt = s => s ? fdate(s) + " " + ftime(s) : "—";
+const opts = (list, sel, vacio) => (vacio ? `<option value="">${esc(vacio)}</option>` : "") + list.map(o => {
+  const [v, t] = Array.isArray(o) ? o : [o, o];
+  return `<option value="${esc(v)}" ${String(v) === String(sel) ? "selected" : ""}>${esc(t)}</option>`;
+}).join("");
+
+// Color del chip según el estado
+const ESTADO_CLASE = {
+  "Pendiente de Programación": "warn", "Pendiente": "warn", "Programado": "az", "En ruta": "az", "Cargada": "az", "Generada": "gr",
+  "Entregado": "ok", "Aprobado": "ok", "Conforme": "ok", "Cerrada": "ok", "Cerrado": "ok", "Aceptado": "ok", "Disponible": "ok", "Activo": "ok",
+  "Rechazado": "err", "No conforme": "err", "Cancelado": "gr", "Reprogramado": "warn", "Abierto": "warn", "Mantenimiento": "warn", "Suspendido": "err", "Inactivo": "gr",
+  "ENTRADA": "ok", "SALIDA": "warn", "AJUSTE": "mo",
+};
+const chip = (t, cls) => `<span class="chip ${cls || ESTADO_CLASE[t] || "gr"}">${esc(t)}</span>`;
+
+function tabla(heads, filas, o = {}) {
+  if (!filas.length) return `<div class="tabla-wrap"><div class="vacio">${o.vacio || "No hay registros para mostrar."}</div></div>`;
+  return `<div class="tabla-wrap"><table class="tabla"><thead><tr>${heads.map(h => `<th class="${/^(Cant|Monto|Total|Saldo|Bidones|Subtotal|Precio|Envases)/.test(h) ? "right" : ""}">${h}</th>`).join("")}</tr></thead>
+  <tbody>${filas.map(f => `<tr>${f.map((c, i) => `<td class="${/^(Cant|Monto|Total|Saldo|Bidones|Subtotal|Precio|Envases)/.test(heads[i] || "") ? "right mono" : ""} ${i === f.length - 1 && /Acciones/.test(heads[i]) ? "acciones" : ""}">${c}</td>`).join("")}</tr>`).join("")}</tbody>${o.pie || ""}</table></div>`;
+}
+const campo = (label, input, ayuda, cls = "") => `<div class="campo ${cls}"><label>${label}</label>${input}${ayuda ? `<span class="ayuda">${ayuda}</span>` : ""}</div>`;
+const alerta = (tipo, html) => `<div class="alerta ${tipo}"><span>${tipo === "err" ? "⚠" : tipo === "ok" ? "✔" : tipo === "warn" ? "⚠" : "ℹ"}</span><div>${html}</div></div>`;
+
+// Íconos del menú (trazos simples)
+const ICON = {
+  dashboard: '<path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>',
+  pedidos: '<path d="M7 4h10l1 3H6l1-3zM5 8h14l-1 12H6L5 8zm4 3v6m6-6v6"/>',
+  clientes: '<path d="M16 11a4 4 0 1 0-8 0 4 4 0 0 0 8 0zM4 21c0-4 3.5-6 8-6s8 2 8 6"/>',
+  inventario: '<path d="M3 7l9-4 9 4-9 4-9-4zm0 5l9 4 9-4M3 17l9 4 9-4"/>',
+  produccion: '<path d="M12 3c3 4 6 7 6 11a6 6 0 0 1-12 0c0-4 3-7 6-11z"/>',
+  logistica: '<path d="M2 6h12v10H2V6zm12 4h4l3 3v3h-7V10zM6 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm11 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/>',
+  caja: '<path d="M3 7h18v12H3V7zm0 4h18M16 15h2M7 7V5h10v2"/>',
+  reportes: '<path d="M4 20V10m6 10V4m6 16v-7m6 7H2"/>',
+  usuarios: '<path d="M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm8 1a2.5 2.5 0 1 0 0-5M3 20c0-3.5 2.7-5 6-5s6 1.500 6 5m2-4.500c2.500.2 5 1.200 5 4.500"/>',
+};
+const icon = n => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[n] || ""}</svg>`;
+const GOTA = `<svg class="gota" viewBox="0 0 32 32"><path d="M16 2C21 9 26 14 26 20a10 10 0 0 1-20 0c0-6 5-11 10-18z" fill="#4FC3F7"/><path d="M11 20a5 5 0 0 0 5 5" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/></svg>`;
+
+// ---------- Avisos ----------
+function toast(msg, tipo = "info") {
+  let box = $("#toasts"); if (!box) { box = document.createElement("div"); box.id = "toasts"; box.setAttribute("aria-live", "polite"); document.body.appendChild(box); }
+  const t = document.createElement("div"); t.className = "toast " + tipo; t.textContent = msg; box.appendChild(t);
+  setTimeout(() => t.remove(), tipo === "err" ? 7000 : 3800);
+}
+
+// ---------- Modal ----------
+const Modal = {
+  abrir({ titulo, cuerpo, pie = "", ancho = false, alMontar = null }) {
+    this.cerrar();
+    const f = document.createElement("div"); f.className = "modal-fondo"; f.id = "modal";
+    f.innerHTML = `<div class="modal ${ancho ? "ancho" : ""}" role="dialog" aria-modal="true" aria-label="${esc(titulo)}">
+      <div class="modal-cab"><h2>${esc(titulo)}</h2><button type="button" data-cerrar aria-label="Cerrar">×</button></div>
+      <div class="modal-cuerpo">${cuerpo}</div>${pie ? `<div class="modal-pie">${pie}</div>` : ""}</div>`;
+    f.addEventListener("mousedown", e => { if (e.target === f) Modal.cerrar(); });
+    f.querySelectorAll("[data-cerrar]").forEach(b => b.onclick = () => Modal.cerrar());
+    document.body.appendChild(f);
+    const first = f.querySelector("input:not([type=hidden]),select,textarea"); if (first) first.focus();
+    if (alMontar) alMontar(f);
+    return f;
+  },
+  cerrar() { const m = $("#modal"); if (m) m.remove(); },
+  // Modal con formulario: onOk recibe el <form>; si lanza error, se muestra y no se cierra
+  form({ titulo, cuerpo, ok = "Guardar", ancho = false, alMontar = null, onOk }) {
+    const m = Modal.abrir({
+      titulo, ancho, alMontar,
+      cuerpo: `<form id="mform" class="form" novalidate>${cuerpo}<div id="merr" class="alerta err hidden" role="alert"></div></form>`,
+      pie: `<button type="button" class="btn sec" data-cerrar2>Cancelar</button><button type="submit" form="mform" class="btn">${ok}</button>`,
+    });
+    m.addEventListener("click", e => { if (e.target.closest("[data-cerrar2]")) Modal.cerrar(); });
+    const f = $("#mform", m);
+    f.addEventListener("submit", e => {
+      e.preventDefault();
+      try { if (onOk(f) !== false) Modal.cerrar(); }
+      catch (err) { const b = $("#merr", m); b.innerHTML = "<span>⚠</span><div>" + esc(err.message) + "</div>"; b.classList.remove("hidden"); b.scrollIntoView({ block: "nearest" }); }
+    });
+    return m;
+  },
+  confirmar(titulo, texto, okTxt, onOk, peligro = false) {
+    Modal.abrir({ titulo, cuerpo: `<p>${texto}</p>`, pie: `<button class="btn sec" data-cerrar>Cancelar</button><button class="btn ${peligro ? "err" : ""}" id="mok">${okTxt}</button>` });
+    $("#mok").onclick = () => { try { onOk(); Modal.cerrar(); } catch (e) { Modal.cerrar(); toast(e.message, "err"); } };
+  },
+};
+const fval = (f, n) => (f.elements[n] ? f.elements[n].value : "");
+
+// ---------- Impresión / exportación ----------
+function imprimir(titulo, html) {
+  const w = window.open("", "_blank", "width=820,height=900");
+  if (!w) { toast("El navegador bloqueó la ventana de impresión. Permita las ventanas emergentes.", "err"); return; }
+  w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(titulo)}</title>
+  <style>body{font-family:Arial,sans-serif;font-size:13px;color:#111;padding:24px}h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:16px 0 6px}
+  table{border-collapse:collapse;width:100%;margin-top:6px}th,td{border:1px solid #999;padding:5px 8px;text-align:left}th{background:#e8eef3}
+  .r{text-align:right}.cab{border-bottom:2px solid #0B5C8E;padding-bottom:8px;margin-bottom:12px}.firma{display:flex;gap:40px;margin-top:60px}.firma div{flex:1;border-top:1px solid #333;text-align:center;padding-top:4px}
+  .etq{border:3px solid #0B5C8E;border-radius:10px;padding:18px;width:360px;text-align:center}.etq b{font-size:22px;display:block;margin:8px 0}</style></head><body>${html}
+  <script>window.onload=function(){window.print()}<\/script></body></html>`);
+  w.document.close();
+}
+function descargarCSV(nombre, cabeceras, filas) {
+  const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+  const csv = "\ufeff" + [cabeceras, ...filas].map(r => r.map(q).join(";")).join("\r\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" })); a.download = nombre; a.click(); URL.revokeObjectURL(a.href);
+}
+
+
+/* ===========================================================
+   Portada: header + main + footer con el inicio de sesión
+   (vive en la misma página que la aplicación)
+   =========================================================== */
+const Portada = {
+  pintar() {
+    $("#logo").innerHTML = GOTA + "<span>AguaPura</span>";
+    $("#anio").textContent = new Date().getFullYear();
+    $("#demo").innerHTML = DB.d.usuarios.filter(u => u.estado).map(u => `<button type="button" data-c="${esc(u.correo)}" data-p="${esc(u.password)}">${esc(u.rol)}</button><span class="muted">${esc(u.correo)}</span>`).join("");
+  },
+  mostrar() {
+    this.pintar();
+    $("#login").reset(); $("#err").classList.add("hidden");
+    $("#app").hidden = true; $("#portada").hidden = false;
+    document.title = "AguaPura · Iniciar sesión";
+  },
+  ocultar() {
+    $("#portada").hidden = true; $("#app").hidden = false;
+    document.title = "AguaPura · Sistema de gestión";
+  },
+  enlazar() {
+    $("#demo").addEventListener("click", e => { const b = e.target.closest("button"); if (b) { $("#correo").value = b.dataset.c; $("#pass").value = b.dataset.p; } });
+    $("#login").addEventListener("submit", e => {
+      e.preventDefault(); const err = $("#err");
+      try {
+        const u = Svc.login($("#correo").value, $("#pass").value);
+        if (!u) throw new Error("Correo o contraseña incorrectos. Revise los datos e intente de nuevo.");
+        sessionStorage.setItem(SESION, u.id_usuario);
+        err.classList.add("hidden");
+        App.iniciar();
+      } catch (ex) { err.innerHTML = "<span>⚠</span><div>" + esc(ex.message) + "</div>"; err.classList.remove("hidden"); }
+    });
+  },
+};
+
+/* ====== app.js ====== */
+/* ===========================================================
+   AguaPura · Núcleo de la aplicación (sesión, menú, rutas)
+   =========================================================== */
+const Views = {};   // nombre -> { titulo, modulo, render() }
+const Acts = {};    // acciones de botones (data-act)
+const Forms = {};   // formularios en línea (data-form)
+const SESION = "aguapura_sesion";
+
+const MENU = [
+  ["dashboard", "Dashboard", null],
+  ["pedidos", "Pedidos", "pedidos"],
+  ["clientes", "Clientes", "pedidos"],
+  ["inventario", "Inventario", "inventario"],
+  ["produccion", "Producción", "produccion"],
+  ["logistica", "Logística", "logistica"],
+  ["caja", "Caja", "caja"],
+  ["reportes", "Reportes", "reportes"],
+  ["usuarios", "Usuarios", "usuarios"],
+];
+
+const App = {
+  user: null,
+  vista: "dashboard",
+  tabs: {},      // pestaña activa por vista
+  filtros: {},   // filtros por vista
+
+  iniciar() {
+    const id = sessionStorage.getItem(SESION);
+    this.user = id ? Q.user(+id) : null;
+    if (!this.user || !this.user.estado) { this.user = null; Portada.mostrar(); return; }
+    Portada.ocultar();
+    if (!this.enlazado) {            // los eventos se registran una sola vez
+      this.enlazado = true;
+      window.addEventListener("hashchange", () => this.ruta());
+      document.addEventListener("click", e => this.clic(e));
+      document.addEventListener("change", e => this.cambio(e));
+      document.addEventListener("submit", e => { const f = e.target.closest("form[data-form]"); if (f && Forms[f.dataset.form]) { e.preventDefault(); this.ejecutar(() => Forms[f.dataset.form](f)); } });
+      document.addEventListener("keydown", e => { if (e.key === "Escape") Modal.cerrar(); });
+    }
+    this.ruta();
+  },
+  // Permiso de una vista: "full", "read" o null
+  permiso(vista) { const v = Views[vista]; if (!v) return null; return v.modulo ? Svc.can(this.user, v.modulo) : "read"; },
+  puede(modulo) { return Svc.can(this.user, modulo) === "full"; },
+  ruta() {
+    if (!this.user) return;
+    let v = (location.hash || "#/dashboard").replace("#/", "").split("?")[0];
+    if (!Views[v] || !this.permiso(v)) v = "dashboard";
+    this.vista = v; this.render();
+    window.scrollTo(0, 0);
+  },
+  ir(v) { if (location.hash === "#/" + v) this.render(); else location.hash = "#/" + v; },
+  tab(vista, def) { return this.tabs[vista] || def; },
+  filtro(vista) { return this.filtros[vista] || (this.filtros[vista] = {}); },
+
+  render() {
+    const v = Views[this.vista], u = this.user;
+    const items = MENU.filter(([id]) => this.permiso(id));
+    $("#app").innerHTML = `
+      <aside class="sidebar" aria-label="Menú principal">
+        <div class="brand">${GOTA}<span>AguaPura</span></div>
+        <nav class="nav">${items.map(([id, t]) => `<a href="#/${id}" class="${id === this.vista ? "activo" : ""}" ${id === this.vista ? 'aria-current="page"' : ""}>${icon(id)}<span>${t}</span></a>`).join("")}</nav>
+        <div class="pie">Taller de Programación Web<br>UTP · Sistema de gestión</div>
+      </aside>
+      <div class="scrim" data-act="menu"></div>
+      <div class="main">
+        <header class="topbar">
+          <button class="menu-btn" data-act="menu" aria-label="Abrir menú">☰</button>
+          <h1>${v.titulo}</h1>
+          <div class="usuario" id="usuario">
+            <button type="button" data-act="usuario-menu" aria-haspopup="true"><b class="nombre">${esc(u.nombres + " " + u.apellidos)}</b><span class="chip az">${esc(u.rol)}</span> ▾</button>
+            <div class="menu">
+              <div class="info"><b>${esc(u.nombres + " " + u.apellidos)}</b><br><span class="muted small">${esc(u.correo)}</span></div>
+              ${u.rol === "Administrador" ? '<button data-act="reset-demo">Restablecer datos de demostración</button>' : ""}
+              <button data-act="salir">Cerrar sesión</button>
+            </div>
+          </div>
+        </header>
+        <main class="contenido" id="contenido">${v.render()}</main>
+        <footer class="pie-pagina">
+          <span><b>AguaPura</b> · Sistema de gestión de agua purificada</span>
+          <span>Taller de Programación Web · UTP · © ${new Date().getFullYear()}</span>
+          <span>Sesión: ${esc(u.rol)}</span>
+        </footer>
+      </div>`;
+    if (v.montar) v.montar();
+  },
+
+  // ----- eventos -----
+  clic(e) {
+    const m = $("#usuario"); if (m && !e.target.closest("#usuario")) m.classList.remove("abierto");
+    const el = e.target.closest("[data-act]"); if (!el) return;
+    const fn = Acts[el.dataset.act]; if (!fn) return;
+    e.preventDefault();
+    this.ejecutar(() => fn(el, e));
+  },
+  cambio(e) {
+    const el = e.target.closest("[data-filtro]"); if (!el) return;
+    const [vista, campo] = el.dataset.filtro.split(".");
+    this.filtro(vista)[campo] = el.value; this.render();
+  },
+  // Ejecuta una acción; muestra errores de negocio como avisos
+  ejecutar(fn, ok) {
+    try { const r = fn(); if (ok) toast(ok, "ok"); return r; }
+    catch (err) { toast(err.message || String(err), "err"); console.error(err); }
+  },
+};
+
+// ----- acciones comunes -----
+Acts.menu = () => $(".app").classList.toggle("nav-abierto");
+Acts["usuario-menu"] = () => $("#usuario").classList.toggle("abierto");
+Acts.salir = () => {
+  sessionStorage.removeItem(SESION); App.user = null; Modal.cerrar();
+  $("#app").innerHTML = "";
+  history.replaceState(null, "", location.pathname + location.search);   // limpia la ruta (#/...)
+  Portada.mostrar(); window.scrollTo(0, 0);
+};
+Acts["reset-demo"] = () => Modal.confirmar("Restablecer datos", "Se borrarán todos los registros y se cargarán de nuevo los datos de demostración. ¿Desea continuar?", "Restablecer", () => { DB.reset(); toast("Datos de demostración restablecidos.", "ok"); App.ir("dashboard"); }, true);
+Acts.tab = el => { App.tabs[el.dataset.vista] = el.dataset.tab; App.render(); };
+Acts.ir = el => App.ir(el.dataset.vista);
+
+// Pestañas reutilizables
+function tabsHtml(vista, lista, def) {
+  const act = App.tab(vista, def);
+  return `<div class="tabs" role="tablist">${lista.map(([id, t]) => `<button class="tab ${id === act ? "activa" : ""}" role="tab" aria-selected="${id === act}" data-act="tab" data-vista="${vista}" data-tab="${id}">${t}</button>`).join("")}</div>`;
+}
+// Aviso de solo lectura
+const soloLectura = vista => App.permiso(vista) === "read" ? `<div class="no-print" style="margin-bottom:14px">${alerta("info", "Su rol (" + esc(App.user.rol) + ") tiene acceso de <b>solo consulta</b> en este módulo.")}</div>` : "";
+
+document.addEventListener("DOMContentLoaded", () => { Portada.enlazar(); App.iniciar(); });
+
+/* ====== views-comercial.js ====== */
+/* ===========================================================
+   Vistas: Dashboard · Pedidos · Clientes y proveedores
+   =========================================================== */
+
+// ======================= DASHBOARD =======================
+Views.dashboard = {
+  titulo: "Panel principal", modulo: null,
+  render() {
+    const d = DB.d, hoy = isoDate();
+    const pedHoy = d.pedidos.filter(p => p.fecha_pedido.slice(0, 10) === hoy).length;
+    const lleno = Q.stock(1, "LLENO"), disp = Q.disponible(), min = Q.producto(1).stock_min;
+    const porLavar = Q.stock(2, "VACIO_POR_LAVAR");
+    const ventasHoy = d.pagos.filter(p => p.fecha_hora.slice(0, 10) === hoy).reduce((a, p) => a + p.monto, 0);
+    const alertas = [];
+    if (disp <= min) alertas.push(alerta("err", `<b>Stock bajo:</b> hay ${num(lleno)} bidones llenos y ${num(disp)} disponibles tras los pedidos pendientes; el mínimo de seguridad es ${num(min)}. Programe una producción.`));
+    else if (disp <= min * 1.5) alertas.push(alerta("warn", `<b>Stock cercano al mínimo:</b> ${num(disp)} bidones disponibles (mínimo ${num(min)}).`));
+    const urg = d.pedidos.filter(p => p.prioridad === "Urgente" && ["Pendiente de Programación", "Reprogramado"].includes(p.estado)).length;
+    if (urg) alertas.push(alerta("warn", `Hay <b>${urg}</b> pedido(s) urgente(s) sin programar.`));
+    const morosos = d.clientes.filter(c => Q.moroso(c.id_cliente));
+    if (morosos.length) alertas.push(alerta("err", `<b>Envases en préstamo vencidos (RN-PO03):</b> ${morosos.map(c => esc(c.nombre) + " (" + Q.saldo(c.id_cliente) + ")").join(", ")}. Superan ${C.MAX_ENVASES_PRESTADOS} envases por más de ${C.DIAS_MAX_PRESTAMO} días.`));
+    const recHoy = d.recepciones.filter(r => r.fecha_hora.slice(0, 10) === hoy), rcv = recHoy.reduce((a, r) => a + r.recibida, 0), dsc = recHoy.reduce((a, r) => a + r.descarte, 0);
+    if (rcv && dsc / rcv > C.DESCARTE_ALERTA) alertas.push(alerta("err", `El descarte de hoy es <b>${(dsc / rcv * 100).toFixed(1)} %</b> de los envases retornados (límite ${C.DESCARTE_ALERTA * 100} %).`));
+    const porRecontrolar = d.lotes.filter(l => l.estado === "Aprobado" && daysBetween(hoy, l.fecha_control) <= 3 && daysBetween(hoy, l.fecha_control) >= 0);
+    if (porRecontrolar.length) alertas.push(alerta("warn", `Lotes por re-controlar microbiológicamente (RN-PO01): ${porRecontrolar.map(l => l.codigo).join(", ")}.`));
+
+    // ventas de los últimos 7 días
+    const dias = []; for (let i = 6; i >= 0; i--) dias.push(addDays(hoy, -i));
+    const vts = dias.map(f => d.pagos.filter(p => p.fecha_hora.slice(0, 10) === f).reduce((a, p) => a + p.monto, 0));
+    const mx = Math.max(...vts, 1);
+    const DS = ["D", "L", "M", "M", "J", "V", "S"];
+    const chart = `<div class="chart" role="img" aria-label="Ventas de los últimos 7 días">${dias.map((f, i) => `<div class="col"><em>${vts[i] ? Math.round(vts[i]) : ""}</em><b style="height:${Math.max(2, vts[i] / mx * 120)}px;${f === hoy ? "background:#C77700" : ""}"></b><span>${DS[new Date(f + "T12:00:00").getDay()]} ${f.slice(8)}</span></div>`).join("")}</div>`;
+
+    const prest = d.saldos.filter(s => s.envases > 0).sort((a, b) => b.envases - a.envases).slice(0, 5);
+    const barras = prest.length ? `<div class="lista-barras">${prest.map(s => { const c = Q.cliente(s.id_cliente), pct = Math.min(100, s.envases / 15 * 100); return `<div><span>${esc(c.nombre)}</span><div class="barra ${Q.moroso(s.id_cliente) ? "err" : s.envases > C.MAX_ENVASES_PRESTADOS ? "warn" : "az"}"><i style="width:${pct}%"></i></div><b class="right">${s.envases}</b></div>`; }).join("")}</div>` : `<div class="vacio">Ningún cliente tiene envases en préstamo.</div>`;
+
+    const pend = Svc.pedidosPlanificables().slice(0, 6);
+    const filas = pend.map(p => [Q.pedCod(p.id_pedido), esc(Q.cliente(p.id_cliente).nombre), p.zona, Q.bidones(p.id_pedido) + " bidones", p.prioridad === "Urgente" ? chip("Urgente", "err") : p.prioridad, chip(p.estado)]);
+
+    return `<div class="stack">
+      <div class="grid g4">
+        <div class="card kpi az"><div class="t">Pedidos del día</div><div class="v">${pedHoy}</div></div>
+        <div class="card kpi ok"><div class="t">Bidones llenos</div><div class="v">${num(lleno)}</div></div>
+        <div class="card kpi warn"><div class="t">Envases por lavar</div><div class="v">${num(porLavar)}</div></div>
+        <div class="card kpi vd"><div class="t">Ventas del día</div><div class="v">${money(ventasHoy)}</div></div>
+      </div>
+      ${alertas.length ? `<div class="stack" style="gap:8px">${alertas.join("")}</div>` : ""}
+      <div class="grid g2">
+        <div class="card"><h2>Ventas de los últimos 7 días (S/)</h2>${chart}</div>
+        <div class="card"><h2>Envases prestados por cliente</h2>${barras}<p class="muted small" style="margin:8px 0 0">En rojo: más de ${C.MAX_ENVASES_PRESTADOS} envases por más de ${C.DIAS_MAX_PRESTAMO} días.</p></div>
+      </div>
+      <div class="card"><div class="card-head"><h2>Pedidos pendientes de programación</h2>${App.permiso("logistica") ? `<button class="btn sm sec" data-act="ir" data-vista="logistica">Ir a planificación de rutas</button>` : ""}</div>
+        ${tabla(["N.º", "Cliente", "Zona", "Cantidad", "Prioridad", "Estado"], filas, { vacio: "No hay pedidos pendientes. Todo está programado." })}</div>
+    </div>`;
+  },
+};
+
+// ======================= PEDIDOS =======================
+Views.pedidos = {
+  titulo: "Pedidos", modulo: "pedidos",
+  render() {
+    const f = App.filtro("pedidos"), q = (f.q || "").toLowerCase();
+    let list = DB.d.pedidos.slice().sort((a, b) => b.id_pedido - a.id_pedido);
+    if (f.estado) list = list.filter(p => p.estado === f.estado);
+    if (f.zona) list = list.filter(p => p.zona === f.zona);
+    if (q) list = list.filter(p => (Q.pedCod(p.id_pedido) + " " + Q.cliente(p.id_cliente).nombre).toLowerCase().includes(q));
+    const full = App.puede("pedidos"), caja = ["Administrador", "Cajero"].includes(App.user.rol);
+    const filas = list.slice(0, 80).map(p => {
+      const cancelable = ["Pendiente de Programación", "Programado", "Reprogramado"].includes(p.estado);
+      const acc = [`<button class="btn sm sec" data-act="ped-ver" data-id="${p.id_pedido}">Ver</button>`];
+      if (full && p.estado === "Pendiente de Programación") acc.push(`<button class="btn sm sec" data-act="ped-edit" data-id="${p.id_pedido}">Editar</button>`);
+      if (full && cancelable) acc.push(`<button class="btn sm err sec" data-act="ped-cancel" data-id="${p.id_pedido}">Cancelar</button>`);
+      if (caja && p.modalidad_pago === "Transferencia" && !p.pago_verificado && cancelable) acc.push(`<button class="btn sm ok" data-act="ped-verif" data-id="${p.id_pedido}">Verificar pago</button>`);
+      return [`<b>${Q.pedCod(p.id_pedido)}</b>`, fdate(p.fecha_pedido), esc(Q.cliente(p.id_cliente).nombre), p.zona, String(Q.bidones(p.id_pedido)), p.prioridad === "Urgente" ? chip("Urgente", "err") : esc(p.prioridad), esc(p.modalidad_pago) + (p.modalidad_pago === "Transferencia" ? (p.pago_verificado ? " ✔" : " (sin verificar)") : ""), money(p.total), chip(p.estado), acc.join(" ")];
+    });
+    return `${soloLectura("pedidos")}
+    <div class="card">
+      <div class="card-head"><h2>Pedidos registrados</h2>${full ? `<button class="btn" data-act="ped-nuevo">+ Nuevo pedido</button>` : ""}</div>
+      <div class="fila no-print" style="margin-bottom:12px">
+        <div class="campo"><label for="f-est">Estado</label><select id="f-est" data-filtro="pedidos.estado">${opts(C.ESTADOS_PEDIDO, f.estado, "Todos")}</select></div>
+        <div class="campo"><label for="f-zona">Zona</label><select id="f-zona" data-filtro="pedidos.zona">${opts(C.ZONAS, f.zona, "Todas")}</select></div>
+        <div class="campo"><label for="f-q">Buscar cliente o N.º</label><input id="f-q" type="search" data-filtro="pedidos.q" value="${esc(f.q || "")}" placeholder="Escriba y presione Enter"></div>
+      </div>
+      ${tabla(["N.º", "Fecha", "Cliente", "Zona", "Bidones", "Prioridad", "Pago", "Total", "Estado", "Acciones"], filas, { vacio: "No hay pedidos con esos filtros." })}
+      ${list.length > 80 ? `<p class="muted small">Se muestran los 80 pedidos más recientes de ${list.length}.</p>` : ""}
+    </div>`;
+  },
+};
+
+function pedidoForm(modo, p) {
+  const nuevo = modo === "nuevo", hoy = isoDate();
+  const dl = DB.d.clientes.filter(c => c.estado).map(c => `<option value="${esc(c.doc_numero + " · " + c.nombre)}">`).join("");
+  const cuerpo = `
+    ${nuevo ? `<div class="campo"><label for="cli">1. Cliente (busque por DNI, RUC o nombre)</label>
+      <input id="cli" name="cli" list="dlcli" autocomplete="off" placeholder="Ej. 20512345678" required><datalist id="dlcli">${dl}</datalist>
+      <input type="hidden" name="id_cliente"><div id="cliInfo" class="small muted">Seleccione un cliente de la lista.</div></div>` : `<p><b>${esc(Q.cliente(p.id_cliente).nombre)}</b> · ${Q.pedCod(p.id_pedido)}</p>`}
+    <h3>${nuevo ? "2. " : ""}Datos de entrega</h3>
+    <div class="campos">
+      ${nuevo ? campo("Canal de atención", `<select name="canal">${opts(C.CANALES, "Llamada")}</select>`) : ""}
+      ${campo("Prioridad", `<select name="prioridad">${opts(C.PRIORIDADES, p ? p.prioridad : "Normal")}</select>`)}
+      ${campo("Fecha de entrega", `<input type="date" name="fecha_entrega" min="${hoy}" value="${p ? p.fecha_entrega : hoy}" required>`)}
+      ${campo("Franja horaria", `<select name="franja">${opts(C.FRANJAS, p ? p.franja : "", "Sin preferencia")}</select>`)}
+      ${campo("Zona de reparto", `<select name="zona">${opts([...C.ZONAS, "Fuera de cobertura"], p ? p.zona : "Centro")}</select>`, "Solo se atiende dentro del radio urbano.")}
+      ${campo("Modalidad de pago", `<select name="modalidad_pago">${opts(C.PAGOS, p ? p.modalidad_pago : "Efectivo")}</select>`, "Transferencia: se despacha cuando caja verifique el pago.")}
+      ${campo("Dirección de entrega", `<input name="direccion" value="${esc(p ? p.direccion : "")}" required>`, "", "span2")}
+    </div>
+    ${nuevo ? `<h3>3. Productos</h3>
+      <div class="item-fila item-cab"><span>Producto</span><span>Cant.</span><span>Envase</span><span>P. unit.</span><span>Subtotal</span><span></span></div>
+      <div id="items"></div>
+      <div class="fila"><button type="button" class="btn sm sec" id="addItem">+ Agregar producto</button><span id="stockInfo" class="small"></span></div>
+      <div class="card" style="background:#F8FAFB"><div class="resumen"><span>Subtotal</span><span id="rSub" class="right mono">S/ 0.00</span><span>IGV (18 %)</span><span id="rIgv" class="right mono">S/ 0.00</span><span class="total">TOTAL</span><span id="rTot" class="total right mono">S/ 0.00</span></div></div>` : ""}`;
+  return cuerpo;
+}
+
+Acts["ped-nuevo"] = () => {
+  Modal.form({
+    titulo: "Nuevo pedido", ancho: true, ok: "Guardar pedido", cuerpo: pedidoForm("nuevo"),
+    alMontar(m) {
+      const f = $("#mform", m), cont = $("#items", m);
+      const fila = (prod = 1) => {
+        const r = document.createElement("div"); r.className = "item-fila";
+        r.innerHTML = `<select data-r="prod"><option value="1">Agua purificada 20 L</option><option value="2">Envase retornable 20 L</option></select>
+          <input type="number" data-r="cant" min="1" value="1"><select data-r="tipo"></select><span class="mono" data-r="pu"></span><b class="mono" data-r="sub"></b>
+          <button type="button" class="btn sm sec" data-r="del" aria-label="Quitar">×</button>`;
+        $('[data-r=prod]', r).value = prod; cont.appendChild(r); sync(r); return r;
+      };
+      const sync = r => {
+        const prod = +$('[data-r=prod]', r).value, t = $('[data-r=tipo]', r);
+        const lista = prod === 1 ? ["Intercambio", "Préstamo"] : ["Venta envase"];
+        if (t.options.length !== lista.length) t.innerHTML = opts(lista);
+        $('[data-r=pu]', r).textContent = money(Q.producto(prod).precio);
+        total();
+      };
+      const items = () => $$(".item-fila:not(.item-cab)", m).map(r => ({ id_producto: +$('[data-r=prod]', r).value, cantidad: +$('[data-r=cant]', r).value, precio: Q.producto(+$('[data-r=prod]', r).value).precio, tipo_envase: $('[data-r=tipo]', r).value }));
+      const total = () => {
+        $$(".item-fila:not(.item-cab)", m).forEach(r => { const pr = +$('[data-r=prod]', r).value; $('[data-r=sub]', r).textContent = money((+$('[data-r=cant]', r).value || 0) * Q.producto(pr).precio); });
+        const t = Svc.calcTotales(items().map(i => ({ ...i, cantidad: i.cantidad || 0 })));
+        $("#rSub", m).textContent = money(t.subtotal); $("#rIgv", m).textContent = money(t.igv); $("#rTot", m).textContent = money(t.total);
+        const b = items().filter(i => i.id_producto === 1).reduce((a, i) => a + (i.cantidad || 0), 0), disp = Q.disponible();
+        $("#stockInfo", m).innerHTML = `Stock disponible de bidones llenos: <b class="${b > disp ? "" : ""}" style="color:var(--${b > disp ? "err" : "ok"})">${disp}</b> ${b > disp ? "✖ insuficiente" : "✔"}`;
+      };
+      cont.addEventListener("input", e => { if (e.target.dataset.r === "prod") sync(e.target.closest(".item-fila")); total(); });
+      cont.addEventListener("change", e => { if (e.target.dataset.r === "prod") sync(e.target.closest(".item-fila")); total(); });
+      cont.addEventListener("click", e => { if (e.target.dataset.r === "del") { if ($$(".item-fila:not(.item-cab)", m).length > 1) { e.target.closest(".item-fila").remove(); total(); } } });
+      $("#addItem", m).onclick = () => fila(2);
+      fila(1);
+      // búsqueda de cliente
+      const ci = $("#cli", m), info = $("#cliInfo", m);
+      ci.addEventListener("input", () => {
+        const v = ci.value.trim().toLowerCase();
+        const c = DB.d.clientes.find(x => x.estado && ((x.doc_numero + " · " + x.nombre).toLowerCase() === v || x.doc_numero === v));
+        f.elements.id_cliente.value = c ? c.id_cliente : "";
+        if (!c) { info.className = "small muted"; info.textContent = "Seleccione un cliente de la lista."; return; }
+        const s = Q.saldo(c.id_cliente), mor = Q.moroso(c.id_cliente);
+        f.elements.direccion.value = c.direccion; f.elements.zona.value = c.zona; if (c.horario) f.elements.franja.value = c.horario;
+        info.className = "small"; info.innerHTML = `<b>${esc(c.nombre)}</b> · ${esc(c.tipo_cliente)} · Tel. ${esc(c.telefono)} · Envases en préstamo: <b style="color:var(--${mor ? "err" : "warn"})">${s}</b>${mor ? " ⚠ supera el límite de RN-PO03 (puede aplicarse recargo)" : ""}`;
+      });
+    },
+    onOk(f) {
+      const id = +f.elements.id_cliente.value; if (!id) throw new Error("Seleccione un cliente registrado de la lista.");
+      const items = $$(".item-fila:not(.item-cab)").map(r => ({ id_producto: +$('[data-r=prod]', r).value, cantidad: +$('[data-r=cant]', r).value, precio: Q.producto(+$('[data-r=prod]', r).value).precio, tipo_envase: $('[data-r=tipo]', r).value }));
+      const nid = Svc.crearPedido({ id_cliente: id, canal: fval(f, "canal"), prioridad: fval(f, "prioridad"), fecha_entrega: fval(f, "fecha_entrega"), franja: fval(f, "franja"), direccion: fval(f, "direccion"), zona: fval(f, "zona"), modalidad_pago: fval(f, "modalidad_pago") }, items, App.user);
+      toast("Pedido " + Q.pedCod(nid) + " registrado en estado «Pendiente de Programación».", "ok"); App.render();
+    },
+  });
+};
+Acts["ped-edit"] = el => {
+  const p = Q.pedido(+el.dataset.id);
+  Modal.form({ titulo: "Modificar pedido " + Q.pedCod(p.id_pedido), cuerpo: pedidoForm("editar", p), onOk(f) {
+    Svc.editarPedido(p.id_pedido, { prioridad: fval(f, "prioridad"), fecha_entrega: fval(f, "fecha_entrega"), franja: fval(f, "franja"), zona: fval(f, "zona"), modalidad_pago: fval(f, "modalidad_pago"), direccion: fval(f, "direccion") }, App.user);
+    toast("Pedido actualizado.", "ok"); App.render();
+  } });
+};
+Acts["ped-cancel"] = el => { const id = +el.dataset.id; Modal.confirmar("Cancelar pedido", `¿Cancelar el pedido <b>${Q.pedCod(id)}</b>? Esta acción no se puede deshacer.`, "Sí, cancelar pedido", () => { Svc.cancelarPedido(id, App.user); toast("Pedido cancelado.", "ok"); App.render(); }, true); };
+Acts["ped-verif"] = el => {
+  const id = +el.dataset.id, p = Q.pedido(id);
+  Modal.form({ titulo: "Verificar pago de " + Q.pedCod(id), ok: "Confirmar pago verificado", cuerpo: `<p>Confirme que la transferencia de <b>${money(p.total)}</b> figura en la cuenta bancaria de la empresa (RN-PO02).</p>${campo("N.º de operación", `<input name="ref" placeholder="Ej. 00123456">`)}`, onOk(f) { Svc.verificarPago(id, fval(f, "ref"), App.user); toast("Pago verificado. El pedido ya puede programarse.", "ok"); App.render(); } });
+};
+Acts["ped-ver"] = el => {
+  const p = Q.pedido(+el.dataset.id), cl = Q.cliente(p.id_cliente), rp = Q.rutaDelPedido(p.id_pedido), r = rp && Q.ruta(rp.id_hoja_ruta);
+  const items = Q.items(p.id_pedido).map(i => [esc(Q.producto(i.id_producto).nombre), String(i.cantidad), esc(i.tipo_envase), money(i.precio), money(i.subtotal)]);
+  const pagos = DB.d.pagos.filter(x => x.id_pedido === p.id_pedido).map(x => [fdt(x.fecha_hora), esc(x.metodo), esc(x.referencia || "—"), money(x.monto)]);
+  const comp = DB.d.comprobantes.find(c => c.id_pedido === p.id_pedido);
+  Modal.abrir({ titulo: "Pedido " + Q.pedCod(p.id_pedido), ancho: true, cuerpo: `<div class="stack">
+    <div class="grid g2"><div><b>${esc(cl.nombre)}</b><br><span class="muted">${esc(cl.doc_tipo)} ${esc(cl.doc_numero)} · Tel. ${esc(cl.telefono)}</span><br>${esc(p.direccion)} (${esc(p.zona)})</div>
+    <div>Estado: ${chip(p.estado)}<br>Prioridad: ${esc(p.prioridad)} · Canal: ${esc(p.canal)}<br>Entrega: ${fdate(p.fecha_entrega)} ${esc(p.franja || "")}<br>${r ? "Hoja de ruta: <b>" + esc(r.codigo) + "</b>" + (rp.motivo ? " · Motivo: " + esc(rp.motivo) : "") : "Sin hoja de ruta asignada"}</div></div>
+    ${tabla(["Producto", "Cant.", "Envase", "Precio", "Subtotal"], items)}
+    <div class="resumen" style="max-width:300px;margin-left:auto"><span>Subtotal</span><span class="right mono">${money(p.subtotal)}</span><span>IGV (18 %)</span><span class="right mono">${money(p.igv)}</span><span class="total">Total</span><span class="total right mono">${money(p.total)}</span></div>
+    <h3>Pagos</h3>${tabla(["Fecha", "Método", "Referencia", "Monto"], pagos, { vacio: "Sin pagos registrados." })}
+    ${comp ? `<p>Comprobante: <b>${comp.tipo} ${comp.serie}-${String(comp.numero).padStart(6, "0")}</b> ${chip(comp.estado_sunat)}</p>` : ""}</div>`, pie: `<button class="btn sec" data-cerrar>Cerrar</button>` });
+};
+
+// ======================= CLIENTES Y PROVEEDORES =======================
+Views.clientes = {
+  titulo: "Clientes y proveedores", modulo: "pedidos",
+  render() {
+    const t = App.tab("clientes", "clientes"), full = App.puede("pedidos");
+    let cuerpo = "";
+    if (t === "clientes") {
+      const f = App.filtro("clientes"), q = (f.q || "").toLowerCase();
+      const list = DB.d.clientes.filter(c => !q || (c.nombre + c.doc_numero).toLowerCase().includes(q));
+      const filas = list.map(c => {
+        const s = Q.saldo(c.id_cliente), mor = Q.moroso(c.id_cliente);
+        return [`<b>${esc(c.nombre)}</b><br><span class="muted small">${esc(c.tipo_cliente)}</span>`, esc(c.doc_tipo) + " " + esc(c.doc_numero), esc(c.telefono), esc(c.direccion) + `<br><span class="muted small">Zona ${esc(c.zona)}</span>`, `<b style="color:var(--${mor ? "err" : s > C.MAX_ENVASES_PRESTADOS ? "warn" : "texto"})">${s}</b>${mor ? " " + chip("Vencido", "err") : ""}`, chip(c.estado ? "Activo" : "Suspendido"),
+          `<button class="btn sm sec" data-act="cli-hist" data-id="${c.id_cliente}">Historial</button>` + (full ? ` <button class="btn sm sec" data-act="cli-edit" data-id="${c.id_cliente}">Editar</button> <button class="btn sm ${c.estado ? "err sec" : "ok"}" data-act="cli-estado" data-id="${c.id_cliente}">${c.estado ? "Suspender" : "Activar"}</button>` : "")];
+      });
+      cuerpo = `<div class="card"><div class="card-head"><h2>Clientes</h2>${full ? `<button class="btn" data-act="cli-nuevo">+ Nuevo cliente</button>` : ""}</div>
+        <div class="campo no-print" style="max-width:320px;margin-bottom:12px"><label for="cq">Buscar por nombre o documento</label><input id="cq" type="search" data-filtro="clientes.q" value="${esc(f.q || "")}"></div>
+        ${tabla(["Cliente", "Documento", "Teléfono", "Dirección", "Envases", "Estado", "Acciones"], filas)}</div>`;
+    } else {
+      const filas = DB.d.proveedores.map(p => {
+        const compras = DB.d.compras.filter(c => c.id_proveedor === p.id_proveedor), tot = compras.reduce((a, c) => a + c.monto, 0);
+        return [`<b>${esc(p.razon_social)}</b><br><span class="muted small">RUC ${esc(p.ruc)}</span>`, esc(p.categoria), esc(p.contacto || "—") + `<br><span class="muted small">${esc(p.telefono || "")}</span>`, esc(p.condiciones || "—"), `${compras.length} · ${money(tot)}`, chip(p.estado ? "Activo" : "Inactivo"),
+          `<button class="btn sm sec" data-act="prov-hist" data-id="${p.id_proveedor}">Compras</button>` + (full ? ` <button class="btn sm sec" data-act="prov-compra" data-id="${p.id_proveedor}">+ Compra</button> <button class="btn sm sec" data-act="prov-edit" data-id="${p.id_proveedor}">Editar</button>` : "")];
+      });
+      cuerpo = `<div class="card"><div class="card-head"><h2>Proveedores de insumos</h2>${full ? `<button class="btn" data-act="prov-nuevo">+ Nuevo proveedor</button>` : ""}</div>
+        ${tabla(["Proveedor", "Categoría", "Contacto", "Condiciones", "Compras (n.º · total)", "Estado", "Acciones"], filas)}</div>`;
+    }
+    return soloLectura("clientes") + tabsHtml("clientes", [["clientes", "Clientes"], ["proveedores", "Proveedores"]], "clientes") + cuerpo;
+  },
+};
+function clienteForm(c = {}) {
+  return `<div class="campos">
+    ${campo("Tipo de cliente", `<select name="tipo_cliente">${opts(["Residencial", "Comercial"], c.tipo_cliente)}</select>`)}
+    ${campo("Nombre o razón social", `<input name="nombre" value="${esc(c.nombre || "")}" required>`)}
+    ${campo("Tipo de documento", `<select name="doc_tipo">${opts(["DNI", "RUC"], c.doc_tipo)}</select>`)}
+    ${campo("N.º de documento", `<input name="doc_numero" inputmode="numeric" maxlength="11" value="${esc(c.doc_numero || "")}" required>`, "DNI: 8 dígitos · RUC: 11 dígitos")}
+    ${campo("Teléfono / WhatsApp", `<input name="telefono" inputmode="tel" value="${esc(c.telefono || "")}" required>`)}
+    ${campo("Correo (opcional)", `<input type="email" name="correo" value="${esc(c.correo || "")}">`)}
+    ${campo("Dirección de entrega", `<input name="direccion" value="${esc(c.direccion || "")}" required>`, "", "span2")}
+    ${campo("Zona", `<select name="zona">${opts(C.ZONAS, c.zona)}</select>`)}
+    ${campo("Referencia", `<input name="referencia" value="${esc(c.referencia || "")}">`)}
+    ${campo("Horario preferido", `<select name="horario">${opts(C.FRANJAS, c.horario, "Sin preferencia")}</select>`)}</div>`;
+}
+const leerCliente = f => ({ tipo_cliente: fval(f, "tipo_cliente"), nombre: fval(f, "nombre").trim(), doc_tipo: fval(f, "doc_tipo"), doc_numero: fval(f, "doc_numero").trim(), telefono: fval(f, "telefono").trim(), correo: fval(f, "correo").trim(), direccion: fval(f, "direccion").trim(), zona: fval(f, "zona"), referencia: fval(f, "referencia").trim(), horario: fval(f, "horario") });
+Acts["cli-nuevo"] = () => Modal.form({ titulo: "Nuevo cliente", ancho: true, cuerpo: clienteForm(), onOk(f) { Svc.guardarCliente(leerCliente(f), App.user); toast("Cliente registrado.", "ok"); App.render(); } });
+Acts["cli-edit"] = el => { const c = Q.cliente(+el.dataset.id); Modal.form({ titulo: "Editar cliente", ancho: true, cuerpo: clienteForm(c), onOk(f) { Svc.guardarCliente({ ...leerCliente(f), id_cliente: c.id_cliente }, App.user); toast("Cliente actualizado.", "ok"); App.render(); } }); };
+Acts["cli-estado"] = el => { Svc.need(App.user, "pedidos"); const c = Q.cliente(+el.dataset.id); c.estado = !c.estado; DB.save(); toast(c.estado ? "Cliente activado." : "Cliente suspendido: no podrá registrar pedidos.", "ok"); App.render(); };
+Acts["cli-hist"] = el => {
+  const c = Q.cliente(+el.dataset.id), peds = DB.d.pedidos.filter(p => p.id_cliente === c.id_cliente).sort((a, b) => b.id_pedido - a.id_pedido);
+  Modal.abrir({ titulo: "Historial de " + c.nombre, ancho: true, cuerpo: `<p>Envases en préstamo: <b>${Q.saldo(c.id_cliente)}</b>${Q.moroso(c.id_cliente) ? " " + chip("Vencido RN-PO03", "err") : ""} · Preferencia: ${esc(c.horario || "—")}</p>` + tabla(["N.º", "Fecha", "Bidones", "Total", "Estado"], peds.map(p => [Q.pedCod(p.id_pedido), fdate(p.fecha_pedido), String(Q.bidones(p.id_pedido)), money(p.total), chip(p.estado)]), { vacio: "Este cliente aún no tiene pedidos." }), pie: `<button class="btn sec" data-cerrar>Cerrar</button>` });
+};
+function provForm(p = {}) {
+  return `<div class="campos">${campo("Razón social", `<input name="razon_social" value="${esc(p.razon_social || "")}" required>`)}
+    ${campo("RUC", `<input name="ruc" inputmode="numeric" maxlength="11" value="${esc(p.ruc || "")}" required>`)}
+    ${campo("Categoría de insumo", `<input name="categoria" value="${esc(p.categoria || "")}" placeholder="Tapas, etiquetas, limpieza, mantenimiento…" required>`)}
+    ${campo("Persona de contacto", `<input name="contacto" value="${esc(p.contacto || "")}">`)}
+    ${campo("Teléfono", `<input name="telefono" value="${esc(p.telefono || "")}">`)}
+    ${campo("Correo", `<input type="email" name="correo" value="${esc(p.correo || "")}">`)}
+    ${campo("Condiciones comerciales", `<input name="condiciones" value="${esc(p.condiciones || "")}" placeholder="Ej. Pago a 15 días">`, "", "span2")}</div>`;
+}
+const leerProv = f => ({ razon_social: fval(f, "razon_social").trim(), ruc: fval(f, "ruc").trim(), categoria: fval(f, "categoria").trim(), contacto: fval(f, "contacto").trim(), telefono: fval(f, "telefono").trim(), correo: fval(f, "correo").trim(), condiciones: fval(f, "condiciones").trim() });
+Acts["prov-nuevo"] = () => Modal.form({ titulo: "Nuevo proveedor", ancho: true, cuerpo: provForm(), onOk(f) { Svc.guardarProveedor(leerProv(f), App.user); toast("Proveedor registrado.", "ok"); App.render(); } });
+Acts["prov-edit"] = el => { const p = DB.d.proveedores.find(x => x.id_proveedor === +el.dataset.id); Modal.form({ titulo: "Editar proveedor", ancho: true, cuerpo: provForm(p), onOk(f) { Svc.guardarProveedor({ ...leerProv(f), id_proveedor: p.id_proveedor }, App.user); toast("Proveedor actualizado.", "ok"); App.render(); } }); };
+Acts["prov-compra"] = el => {
+  const p = DB.d.proveedores.find(x => x.id_proveedor === +el.dataset.id);
+  Modal.form({ titulo: "Registrar compra a " + p.razon_social, cuerpo: `<div class="campos">${campo("Fecha", `<input type="date" name="fecha" value="${isoDate()}" max="${isoDate()}">`)}${campo("Monto total (S/)", `<input type="number" name="monto" min="0" step="0.01" required>`)}${campo("Descripción de los insumos", `<input name="descripcion" required>`, "", "span2")}</div>`, onOk(f) { Svc.guardarCompra({ id_proveedor: p.id_proveedor, fecha: fval(f, "fecha"), monto: +fval(f, "monto"), descripcion: fval(f, "descripcion") }, App.user); toast("Compra registrada.", "ok"); App.render(); } });
+};
+Acts["prov-hist"] = el => {
+  const p = DB.d.proveedores.find(x => x.id_proveedor === +el.dataset.id), cs = DB.d.compras.filter(c => c.id_proveedor === p.id_proveedor).sort((a, b) => b.fecha.localeCompare(a.fecha));
+  Modal.abrir({ titulo: "Compras a " + p.razon_social, ancho: true, cuerpo: tabla(["Fecha", "Descripción", "Registró", "Monto"], cs.map(c => [fdate(c.fecha), esc(c.descripcion), esc(Q.userName(c.id_usuario)), money(c.monto)]), { vacio: "Aún no hay compras registradas." }), pie: `<button class="btn sec" data-cerrar>Cerrar</button>` });
+};
+
+/* ====== views-planta.js ====== */
+/* ===========================================================
+   Vistas: Inventario y Kardex · Producción y calidad
+   =========================================================== */
+
+// ======================= INVENTARIO =======================
+function kardexFiltrado() {
+  const f = App.filtro("inventario");
+  let l = DB.d.movimientos.slice();
+  if (f.prod) l = l.filter(m => m.id_producto === +f.prod);
+  if (f.cat) l = l.filter(m => m.categoria === f.cat);
+  if (f.tipo) l = l.filter(m => m.tipo === f.tipo);
+  if (f.desde) l = l.filter(m => m.fecha_hora.slice(0, 10) >= f.desde);
+  if (f.hasta) l = l.filter(m => m.fecha_hora.slice(0, 10) <= f.hasta);
+  return l.sort((a, b) => b.fecha_hora.localeCompare(a.fecha_hora) || b.id_movimiento - a.id_movimiento);
+}
+Views.inventario = {
+  titulo: "Inventario y Kardex", modulo: "inventario",
+  render() {
+    const full = App.puede("inventario"), t = App.tab("inventario", "stock");
+    const tabs = [["stock", "Stock actual"], ["kardex", "Kardex"], ["recepcion", "Recepción y lavado"], ["ajustes", "Ajustes y mermas"]];
+    let c = "";
+    if (t === "stock") {
+      const min = Q.producto(1).stock_min, disp = Q.disponible(), lleno = Q.stock(1, "LLENO");
+      const rec = DB.d.recepciones.filter(r => r.fecha_hora.slice(0, 10) === isoDate()), rcv = rec.reduce((a, r) => a + r.recibida, 0), dsc = rec.reduce((a, r) => a + r.descarte, 0);
+      const filas = [[1, "LLENO"], [2, "VACIO_POR_LAVAR"], [2, "VACIO_EN_LAVADO"], [2, "VACIO_APTO"], [2, "DESCARTE"]].map(([p, k]) => {
+        const q = Q.stock(p, k), m = p === 1 ? min : 0;
+        return [esc(Q.producto(p).nombre), C.CATEGORIAS[k], String(q), p === 1 ? String(min) : "—", p === 1 ? (q <= min ? chip("Bajo el mínimo", "err") : chip("Suficiente", "ok")) : (k === "DESCARTE" ? chip("Para baja", "gr") : chip("Normal", "ok"))];
+      });
+      c = `<div class="stack">
+        ${disp <= min ? alerta("err", `<b>Alerta de stock mínimo:</b> los bidones llenos disponibles (${disp}) están por debajo del mínimo de seguridad (${min}).`) : ""}
+        ${rcv && dsc / rcv > C.DESCARTE_ALERTA ? alerta("err", `Descarte del día: <b>${(dsc / rcv * 100).toFixed(1)} %</b> de los envases retornados (límite ${C.DESCARTE_ALERTA * 100} %).`) : ""}
+        <div class="grid g4">
+          <div class="card kpi ${disp <= min ? "err" : "ok"}"><div class="t">Bidones llenos (físico)</div><div class="v">${num(lleno)}</div><div class="muted small">Disponibles para vender: ${num(disp)}</div></div>
+          <div class="card kpi warn"><div class="t">Vacíos por lavar</div><div class="v">${num(Q.stock(2, "VACIO_POR_LAVAR"))}</div></div>
+          <div class="card kpi az"><div class="t">Vacíos aptos (desinfectados)</div><div class="v">${num(Q.stock(2, "VACIO_APTO"))}</div></div>
+          <div class="card kpi err"><div class="t">Descarte acumulado</div><div class="v">${num(Q.stock(2, "DESCARTE"))}</div></div>
+        </div>
+        <div class="card"><h2>Existencias por categoría</h2>${tabla(["Producto", "Categoría", "Cantidad", "Mínimo", "Estado"], filas)}</div>
+      </div>`;
+    } else if (t === "kardex") {
+      const f = App.filtro("inventario"), l = kardexFiltrado();
+      const filas = l.slice(0, 150).map(m => [fdt(m.fecha_hora), esc(Q.producto(m.id_producto).codigo), C.CATEGORIAS[m.categoria], chip(m.tipo), esc(m.motivo.replace("_", " ").toLowerCase()), String(m.cantidad), `<b>${m.saldo}</b>`, esc(Q.userName(m.id_usuario)), `<span class="muted small">${esc(m.obs)}</span>`]);
+      c = `<div class="card"><div class="card-head"><h2>Kardex de entradas, salidas y existencias</h2><button class="btn sm sec" data-act="kardex-csv">Exportar CSV</button></div>
+        <div class="fila no-print" style="margin-bottom:12px">
+          <div class="campo"><label>Producto</label><select data-filtro="inventario.prod">${opts([[1, "Agua 20 L"], [2, "Envase 20 L"]], f.prod, "Todos")}</select></div>
+          <div class="campo"><label>Categoría</label><select data-filtro="inventario.cat">${opts(Object.entries(C.CATEGORIAS), f.cat, "Todas")}</select></div>
+          <div class="campo"><label>Tipo</label><select data-filtro="inventario.tipo">${opts(["ENTRADA", "SALIDA", "AJUSTE"], f.tipo, "Todos")}</select></div>
+          <div class="campo"><label>Desde</label><input type="date" data-filtro="inventario.desde" value="${f.desde || ""}"></div>
+          <div class="campo"><label>Hasta</label><input type="date" data-filtro="inventario.hasta" value="${f.hasta || ""}"></div></div>
+        ${tabla(["Fecha y hora", "Producto", "Categoría", "Tipo", "Motivo", "Cant.", "Saldo", "Usuario", "Detalle"], filas, { vacio: "No hay movimientos con esos filtros." })}
+        <p class="muted small">${l.length > 150 ? "Se muestran los 150 movimientos más recientes de " + l.length + ". Use el CSV para ver todos." : l.length + " movimiento(s)."}</p></div>`;
+    } else if (t === "recepcion") {
+      const pend = DB.d.rutas.filter(r => r.estado === "Cerrada" && !Q.tieneRecepcion(r.id_hoja_ruta));
+      const recs = DB.d.recepciones.slice().sort((a, b) => b.id_recepcion - a.id_recepcion).slice(0, 12).map(r => { const ru = Q.ruta(r.id_hoja_ruta), pct = r.recibida ? r.descarte / r.recibida : 0; return [fdt(r.fecha_hora), esc(ru.codigo), String(r.recibida), String(r.apto), `${r.descarte} ${pct > C.DESCARTE_ALERTA ? chip((pct * 100).toFixed(1) + " %", "err") : ""}`, esc(Q.userName(r.id_usuario))]; });
+      const mant = DB.d.mantenimientos.slice().sort((a, b) => b.fecha.localeCompare(a.fecha)).map(m => [fdate(m.fecha), esc(m.equipo), chip(m.tipo, m.tipo === "Mantenimiento" ? "az" : "mo"), esc(m.detalle)]);
+      c = `<div class="stack">
+        <div class="grid g2">
+          <div class="card"><h2>Recepción de envases devueltos</h2>
+            ${pend.length ? alerta("warn", `Hay <b>${pend.length}</b> hoja(s) de ruta cerrada(s) pendiente(s) de recepción: ${pend.map(r => esc(r.codigo)).join(", ")}.`) : `<p class="muted">No hay rutas pendientes de recepción.</p>`}
+            ${full ? `<p><button class="btn" data-act="rec-nueva" ${pend.length ? "" : "disabled"}>Registrar recepción</button></p>` : ""}</div>
+          <div class="card"><h2>Lavado y desinfección</h2>
+            <p>Envases por lavar: <b>${num(Q.stock(2, "VACIO_POR_LAVAR"))}</b> · Aptos para llenado: <b>${num(Q.stock(2, "VACIO_APTO"))}</b></p>
+            <p class="muted small">Ningún envase puede llenarse sin pasar por la máquina desinfectante (RN-OP03).</p>
+            ${full ? `<button class="btn" data-act="lavar" ${Q.stock(2, "VACIO_POR_LAVAR") ? "" : "disabled"}>Registrar lavado</button>` : ""}</div></div>
+        <div class="card"><h2>Recepciones recientes</h2>${tabla(["Fecha y hora", "Hoja de ruta", "Recibidos", "Aptos", "Descarte", "Recibió"], recs, { vacio: "Aún no hay recepciones." })}</div>
+        <div class="card"><div class="card-head"><h2>Mantenimiento y solución sanitizante de lavadoras</h2>${full ? `<button class="btn sm" data-act="mant-nuevo">+ Registrar</button>` : ""}</div>${tabla(["Fecha", "Equipo", "Tipo", "Detalle"], mant)}</div></div>`;
+    } else {
+      const aj = DB.d.movimientos.filter(m => ["MERMA", "AJUSTE_MANUAL"].includes(m.motivo)).sort((a, b) => b.id_movimiento - a.id_movimiento).slice(0, 15).map(m => [fdt(m.fecha_hora), esc(Q.producto(m.id_producto).codigo), C.CATEGORIAS[m.categoria], chip(m.tipo), String(m.cantidad), esc(m.motivo === "MERMA" ? "Merma" : "Ajuste manual"), esc(Q.userName(m.id_usuario)), esc(m.obs)]);
+      const autoriza = ["Administrador", "Supervisor"].includes(App.user.rol);
+      c = `<div class="card"><div class="card-head"><h2>Ajustes de inventario y mermas</h2>${autoriza ? `<button class="btn" data-act="ajuste-nuevo">+ Registrar ajuste</button>` : ""}</div>
+        ${autoriza ? "" : alerta("info", "Solo el Administrador o el Supervisor pueden autorizar ajustes de inventario.")}
+        <div style="height:10px"></div>${tabla(["Fecha y hora", "Producto", "Categoría", "Tipo", "Cant.", "Motivo", "Autorizó", "Justificación"], aj, { vacio: "No hay ajustes registrados." })}</div>`;
+    }
+    return soloLectura("inventario") + tabsHtml("inventario", tabs, "stock") + c;
+  },
+};
+Acts["kardex-csv"] = () => { const l = kardexFiltrado(); descargarCSV("kardex_" + isoDate() + ".csv", ["Fecha", "Producto", "Categoría", "Tipo", "Motivo", "Cantidad", "Saldo", "Usuario", "Detalle"], l.map(m => [fdt(m.fecha_hora), Q.producto(m.id_producto).codigo, C.CATEGORIAS[m.categoria], m.tipo, m.motivo, m.cantidad, m.saldo, Q.userName(m.id_usuario), m.obs])); };
+Acts["rec-nueva"] = () => {
+  const pend = DB.d.rutas.filter(r => r.estado === "Cerrada" && !Q.tieneRecepcion(r.id_hoja_ruta));
+  Modal.form({ titulo: "Registrar recepción de envases", ok: "Registrar recepción", cuerpo: `<div class="campos">
+    ${campo("Hoja de ruta", `<select name="ruta" id="rr">${opts(pend.map(r => [r.id_hoja_ruta, r.codigo + " · " + r.zona]))}</select>`, "", "span2")}
+    ${campo("Envases vacíos recibidos", `<input type="number" name="recibida" id="rrec" min="0" required>`, "")}
+    ${campo("De ellos, descartados (daño o contaminación)", `<input type="number" name="descarte" min="0" value="0">`)}
+    ${campo("Observaciones", `<input name="obs" placeholder="Grietas, olores atípicos, residuos…">`, "", "span2")}</div><div id="rinfo" class="small muted"></div>`,
+    alMontar(m) { const sel = $("#rr", m), inp = $("#rrec", m), inf = $("#rinfo", m); const upd = () => { const r = Q.ruta(+sel.value); inp.value = r.envases_esperados; inf.innerHTML = `Envases esperados según las entregas: <b>${r.envases_esperados}</b>`; }; sel.onchange = upd; upd(); },
+    onOk(f) { const r = Svc.recepcion({ rutaId: +fval(f, "ruta"), recibida: fval(f, "recibida"), descarte: fval(f, "descarte"), obs: fval(f, "obs") }, App.user); toast(r.alerta ? "Recepción registrada. ⚠ El descarte supera el 5 % de la carga." : "Recepción registrada. Los envases aptos pasan a «por lavar».", r.alerta ? "err" : "ok"); App.render(); } });
+};
+Acts.lavar = () => {
+  const max = Q.stock(2, "VACIO_POR_LAVAR");
+  Modal.form({ titulo: "Registrar lavado y desinfección", ok: "Registrar lavado", cuerpo: `<p>Envases por lavar: <b>${max}</b>. Los envases lavados pasan a «vacíos aptos» y quedan listos para el llenado.</p>${campo("Cantidad de envases lavados", `<input type="number" name="cant" min="1" max="${max}" value="${max}" required>`)}`, onOk(f) { Svc.lavar(+fval(f, "cant"), App.user); toast("Lavado registrado.", "ok"); App.render(); } });
+};
+Acts["mant-nuevo"] = () => Modal.form({ titulo: "Registrar mantenimiento o cambio de solución", cuerpo: `<div class="campos">${campo("Equipo", `<select name="equipo">${opts(["Lavadora de bidones", "Máquina desinfectante", "Llenadora automática", "Sistema de ósmosis inversa", "Lámpara UV / ozonizador"])}</select>`)}${campo("Tipo", `<select name="tipo">${opts(["Mantenimiento", "Cambio de solución sanitizante"])}</select>`)}${campo("Detalle", `<input name="detalle" required>`, "", "span2")}</div>`, onOk(f) { Svc.mantenimiento({ equipo: fval(f, "equipo"), tipo: fval(f, "tipo"), detalle: fval(f, "detalle") }, App.user); toast("Registro guardado.", "ok"); App.render(); } });
+Acts["ajuste-nuevo"] = () => Modal.form({ titulo: "Registrar ajuste de inventario", ok: "Autorizar ajuste", cuerpo: `<div class="campos">
+  ${campo("Producto y categoría", `<select name="pc">${opts([["1:LLENO", "Bidones llenos"], ["2:VACIO_POR_LAVAR", "Vacíos por lavar"], ["2:VACIO_APTO", "Vacíos aptos"], ["2:DESCARTE", "Descarte"]])}</select>`, "", "span2")}
+  ${campo("Tipo", `<select name="tipo">${opts([["SALIDA", "Salida (resta del stock)"], ["ENTRADA", "Entrada (suma al stock)"]])}</select>`)}
+  ${campo("Motivo", `<select name="motivo">${opts([["MERMA", "Merma, rotura o robo"], ["AJUSTE_MANUAL", "Ajuste por conteo físico"]])}</select>`)}
+  ${campo("Cantidad", `<input type="number" name="cant" min="1" required>`)}
+  ${campo("Justificación (obligatoria)", `<input name="obs" required placeholder="Ej. 2 bidones rotos durante el apilado">`, "", "span2")}</div>`,
+  onOk(f) { const [p, k] = fval(f, "pc").split(":"); Svc.ajustar({ prod: +p, cat: k, tipo: fval(f, "tipo"), motivo: fval(f, "motivo"), cant: +fval(f, "cant"), obs: fval(f, "obs") }, App.user); toast("Ajuste registrado en el kardex.", "ok"); App.render(); } });
+
+// ======================= PRODUCCIÓN =======================
+Views.produccion = {
+  titulo: "Producción y control de calidad", modulo: "produccion",
+  render() {
+    const full = App.puede("produccion"), tq = DB.d.tanque, pct = tq.litros / tq.capacidad * 100, hoy = isoDate();
+    const lotes = DB.d.lotes.slice().sort((a, b) => b.id_lote - a.id_lote).slice(0, 12).map(l => {
+      const k = DB.d.controles.find(x => x.id_lote === l.id_lote) || {}, dias = daysBetween(hoy, l.fecha_control);
+      return [`<b>${esc(l.codigo)}</b>`, fdate(l.fecha), String(l.cantidad), String(k.ph ?? "—"), String(k.cloro ?? "—"), String(k.tds ?? "—"), String(k.ufc ?? "—"),
+        l.estado === "Aprobado" ? (dias < 0 ? chip("Re-control vencido", "err") : fdate(l.fecha_control) + (dias <= 3 ? " " + chip("Pronto", "warn") : "")) : "—", chip(l.estado),
+        `<button class="btn sm sec" data-act="lote-etq" data-id="${l.id_lote}">Etiqueta</button>`];
+    });
+    return `${soloLectura("produccion")}<div class="stack">
+      <div class="grid g-lado">
+        ${full ? `<form class="card" id="form-lote" data-form="lote" novalidate>
+          <h2>Orden de producción (nuevo lote)</h2>
+          <div class="campos">
+            ${campo("Cantidad producida (bidones de 20 L)", `<input type="number" name="cantidad" min="1" required>`, `Envases aptos disponibles: <b>${Q.stock(2, "VACIO_APTO")}</b>`)}
+            ${campo("Hora de inicio", `<input type="time" name="inicio" value="06:30" required>`)}
+            ${campo("Hora de fin", `<input type="time" name="fin" value="09:15" required>`)}
+          </div>
+          <h3 style="margin:16px 0 8px">Mediciones de calidad</h3>
+          <div class="campos">
+            ${campo("pH (6.5 – 8.5)", `<input type="number" name="ph" step="0.1" required>`, "", "")}
+            ${campo("Cloro residual (mg/L)", `<input type="number" name="cloro" step="0.01" min="0" required>`, "Máx. " + C.CLORO_MAX)}
+            ${campo("TDS (mg/L)", `<input type="number" name="tds" step="1" min="0" required>`, "Máx. " + C.TDS_MAX)}
+            ${campo("Microorganismos (UFC/100 mL)", `<input type="number" name="ufc" min="0" required>`, "Debe ser 0")}
+          </div>
+          <div id="lote-eval" class="small" style="margin:12px 0">Registre las mediciones para evaluar el lote.</div>
+          <div class="fila"><button class="btn" type="submit">Finalizar orden de producción</button></div>
+          <p class="muted small" style="margin:10px 0 0">Si alguna medición no cumple, el lote queda <b>Rechazado</b> y no ingresa al inventario (RFN-02.5).</p>
+        </form>` : `<div class="card">${alerta("info", "Su rol solo puede consultar los lotes de producción.")}</div>`}
+        <div class="card"><h2>Agua purificada en tanques</h2>
+          <div class="barra ${pct < 25 ? "err" : pct < 50 ? "warn" : "az"}" style="height:20px"><i style="width:${pct}%"></i></div>
+          <p><b>${num(tq.litros)} L</b> de ${num(tq.capacidad)} L · alcanza para ${num(Math.floor(tq.litros / 20))} bidones</p>
+          ${full ? `<button class="btn sec" data-act="tanque">Registrar reposición de tanque</button>` : ""}
+          <hr style="border:0;border-top:1px solid var(--borde);margin:16px 0">
+          <h3>Proceso de tratamiento</h3><p class="muted small" style="margin:6px 0 0">Filtración multimedia → carbón activado → ósmosis inversa → luz UV / ozono → llenado volumétrico de 20 L → tapado y sello termocontraíble.</p>
+        </div>
+      </div>
+      <div class="card"><h2>Lotes recientes</h2>${tabla(["Lote", "Fecha", "Producidos", "pH", "Cloro", "TDS", "UFC", "Re-control hasta", "Estado", "Acciones"], lotes, { vacio: "Aún no hay lotes registrados." })}</div>
+    </div>`;
+  },
+  montar() {
+    const f = $("#form-lote"); if (!f) return;
+    const ev = $("#lote-eval");
+    const leer = () => ({ ph: parseFloat(f.elements.ph.value), cloro: parseFloat(f.elements.cloro.value), tds: parseFloat(f.elements.tds.value), ufc: parseFloat(f.elements.ufc.value) });
+    const marcar = () => {
+      const m = leer();
+      [["ph", m.ph >= C.PH[0] && m.ph <= C.PH[1]], ["cloro", m.cloro <= C.CLORO_MAX], ["tds", m.tds <= C.TDS_MAX], ["ufc", m.ufc <= C.UFC_MAX]].forEach(([n, ok]) => {
+        const el = f.elements[n], vacio = el.value === ""; el.closest(".campo").classList.toggle("error", !vacio && !ok);
+      });
+      if ([m.ph, m.cloro, m.tds, m.ufc].some(isNaN)) { ev.className = "small"; ev.textContent = "Registre las mediciones para evaluar el lote."; return; }
+      const errs = Svc.evaluarCalidad(m);
+      ev.className = "alerta " + (errs.length ? "err" : "ok");
+      ev.innerHTML = errs.length ? `<span>⚠</span><div><b>Resultado: NO CONFORME.</b> ${esc(errs.join("; "))}.</div>` : `<span>✔</span><div><b>Resultado: CONFORME.</b> El lote puede aprobarse.</div>`;
+    };
+    f.addEventListener("input", marcar);
+  },
+};
+Acts.tanque = () => Modal.confirmar("Reponer tanque", "¿Confirma que el tanque de agua purificada fue llenado a su capacidad máxima?", "Confirmar reposición", () => { Svc.reponerTanque(App.user); toast("Tanque repuesto.", "ok"); App.render(); });
+Acts["lote-etq"] = el => {
+  const l = DB.d.lotes.find(x => x.id_lote === +el.dataset.id);
+  imprimir("Etiqueta " + l.codigo, `<div class="etq"><h1>AguaPura</h1><div>Agua purificada · Bidón 20 L</div><b>${esc(l.codigo)}</b><div>Envasado: ${fdate(l.fecha)}</div><div>Consumir / re-controlar antes de: ${fdate(l.fecha_control)}</div><div style="margin-top:10px;font-size:11px">Estado del lote: ${esc(l.estado)}</div></div>`);
+};
+
+// Envío del formulario de lote
+Forms.lote = f => {
+  const g = n => parseFloat(f.elements[n].value);
+  const r = Svc.crearLote({ cantidad: Math.round(g("cantidad")), inicio: f.elements.inicio.value, fin: f.elements.fin.value, ph: g("ph"), cloro: g("cloro"), tds: g("tds"), ufc: g("ufc") }, App.user);
+  if (r.errs.length) toast("Lote " + r.lote.codigo + " RECHAZADO: " + r.errs.join("; ") + ". No ingresa al inventario.", "err");
+  else toast("Lote " + r.lote.codigo + " aprobado. " + r.lote.cantidad + " bidones ingresaron al inventario.", "ok");
+  App.render();
+};
+
+/* ====== views-logistica.js ====== */
+/* ===========================================================
+   Vistas: Logística (rutas y entregas) · Caja y finanzas
+   =========================================================== */
+
+// ======================= LOGÍSTICA =======================
+const esChofer = () => App.user.rol === "Chofer";
+const choferes = () => DB.d.usuarios.filter(u => u.rol === "Chofer" && u.estado);
+
+Views.logistica = {
+  titulo: "Logística y rutas de reparto", modulo: "logistica",
+  render() {
+    const tabs = esChofer() ? [["mis", "Mis entregas"]] : [["plan", "Planificación"], ["rutas", "Hojas de ruta"], ["veh", "Vehículos"]];
+    const t = App.tab("logistica", tabs[0][0]);
+    const act = tabs.some(x => x[0] === t) ? t : tabs[0][0];
+    const cuerpo = act === "mis" ? this.mis() : act === "plan" ? this.plan() : act === "rutas" ? this.rutas() : this.veh();
+    return soloLectura("logistica") + (tabs.length > 1 ? tabsHtml("logistica", tabs, tabs[0][0]) : "") + cuerpo;
+  },
+
+  plan() {
+    const f = App.filtro("logistica"), full = App.puede("logistica") && !esChofer();
+    const todos = Svc.pedidosPlanificables();
+    const zonaDef = C.ZONAS.map(z => [z, todos.filter(p => p.zona === z).length]).sort((a, b) => b[1] - a[1])[0][0];
+    const zona = f.zona || zonaDef;
+    const lista = todos.filter(p => p.zona === zona).sort((a, b) => (a.prioridad === "Urgente" ? 0 : 1) - (b.prioridad === "Urgente" ? 0 : 1) || a.id_pedido - b.id_pedido);
+    const sel = (f.sel || []).filter(id => lista.some(p => p.id_pedido === id));
+    const veh = DB.d.vehiculos.filter(v => v.estado !== "Mantenimiento");
+    const vId = +f.veh || (veh.find(v => v.estado === "Disponible") || veh[0] || {}).id_vehiculo, V = Q.vehiculo(vId);
+    const chId = +f.chofer || (choferes()[0] || {}).id_usuario;
+    const total = sel.reduce((a, id) => a + Q.bidones(id), 0), esp = sel.reduce((a, id) => a + Q.intercambio(id), 0);
+    const cap = V ? V.capacidad : 0, pct = cap ? Math.min(100, total / cap * 100) : 0, excede = total > cap;
+    const peso = sel.reduce((a, id) => a + Q.items(id).reduce((s, i) => s + i.cantidad * Q.producto(i.id_producto).peso_kg, 0), 0);
+    const filas = lista.map(p => [`<input type="checkbox" ${sel.includes(p.id_pedido) ? "checked" : ""} ${full ? "" : "disabled"} data-act="plan-sel" data-id="${p.id_pedido}" aria-label="Seleccionar ${Q.pedCod(p.id_pedido)}">`, `<b>${Q.pedCod(p.id_pedido)}</b>`, esc(Q.cliente(p.id_cliente).nombre) + `<br><span class="muted small">${esc(p.direccion)}</span>`, String(Q.bidones(p.id_pedido)), p.prioridad === "Urgente" ? chip("Urgente", "err") : esc(p.prioridad), p.modalidad_pago === "Transferencia" && !p.pago_verificado ? chip("Pago sin verificar", "warn") : (p.estado === "Reprogramado" ? chip("Reprogramado") : "—")]);
+    return `<div class="grid g-lado">
+      <div class="card"><div class="card-head"><h2>Pedidos pendientes</h2>
+        <div class="campo" style="min-width:150px"><label for="pz">Zona</label><select id="pz" data-filtro="logistica.zona">${opts(C.ZONAS.map(z => [z, z + " (" + todos.filter(p => p.zona === z).length + ")"]), zona)}</select></div></div>
+        ${tabla(["", "N.º", "Cliente", "Bidones", "Prioridad", "Observación"], filas, { vacio: "No hay pedidos pendientes en esta zona." })}
+        <p class="muted small">Seleccionados: <b>${sel.length}</b> pedido(s) · <b>${total}</b> bidones. El orden de las paradas sigue el orden de selección.</p></div>
+      <div class="card"><h2>Nueva hoja de ruta</h2>
+        <div class="stack" style="gap:12px">
+          ${campo("Vehículo", `<select id="sel-veh" data-filtro="logistica.veh">${opts(veh.map(v => [v.id_vehiculo, `${v.placa} · ${v.tipo} (${v.capacidad} bidones)` + (v.estado !== "Disponible" ? " – " + v.estado : "")]), vId)}</select>`)}
+          ${campo("Chofer", `<select id="sel-chofer" data-filtro="logistica.chofer">${opts(choferes().map(u => [u.id_usuario, u.nombres + " " + u.apellidos]), chId)}</select>`)}
+          <div><div class="small muted">Capacidad del vehículo</div><div class="barra ${excede ? "err" : pct > 85 ? "warn" : ""}" style="margin:4px 0"><i style="width:${pct}%"></i></div>
+            <b style="color:var(--${excede ? "err" : "ok"})">${total} / ${cap} bidones (${Math.round(pct)} %)</b> · Peso: ${Math.round(peso)} kg</div>
+          <div class="small">Envases vacíos que deben retornar a planta: <b>${esp}</b></div>
+          ${excede ? alerta("err", `Excede el límite de ${cap} bidones. No se puede generar la ruta (RN-OP02).`) : ""}
+          ${full ? `<button class="btn ok lg" data-act="ruta-crear" ${sel.length && !excede ? "" : "disabled"}>Generar hoja de ruta</button>` : ""}
+        </div></div></div>`;
+  },
+
+  rutas() {
+    const full = App.puede("logistica");
+    const filas = DB.d.rutas.slice().sort((a, b) => b.id_hoja_ruta - a.id_hoja_ruta).slice(0, 20).map(r => {
+      const acc = [`<button class="btn sm sec" data-act="ruta-ver" data-id="${r.id_hoja_ruta}">Detalle</button>`];
+      if (full) {
+        if (r.estado === "Generada") acc.push(`<button class="btn sm" data-act="ruta-cargar" data-id="${r.id_hoja_ruta}">Marcar cargada</button>`);
+        if (r.estado === "Cargada") acc.push(`<button class="btn sm ok" data-act="ruta-iniciar" data-id="${r.id_hoja_ruta}">Iniciar ruta</button>`);
+        if (r.estado === "En ruta") acc.push(`<button class="btn sm" data-act="ruta-cerrar" data-id="${r.id_hoja_ruta}">Cerrar ruta</button>`);
+      }
+      acc.push(`<button class="btn sm sec" data-act="ruta-print" data-id="${r.id_hoja_ruta}">Imprimir</button>`);
+      const liq = r.estado === "Cerrada" ? (Q.tieneRecepcion(r.id_hoja_ruta) && Q.tieneCierre(r.id_hoja_ruta) ? chip("Liquidada", "ok") : chip("Por liquidar", "warn")) : "";
+      return [`<b>${esc(r.codigo)}</b>`, fdate(r.fecha), esc(r.zona), esc(Q.vehiculo(r.id_vehiculo).placa), esc(Q.userName(r.id_chofer)), String(r.total_bidones), chip(r.estado) + " " + liq, acc.join(" ")];
+    });
+    return `<div class="card"><h2>Hojas de ruta</h2>${tabla(["Código", "Fecha", "Zona", "Vehículo", "Chofer", "Bidones", "Estado", "Acciones"], filas, { vacio: "Aún no se generaron hojas de ruta." })}
+      <p class="muted small">Flujo: Generada → Cargada (descuenta el stock) → En ruta → Cerrada (todas las paradas con estado final) → recepción de envases y cierre de caja.</p></div>`;
+  },
+
+  veh() {
+    const full = App.puede("logistica");
+    const filas = DB.d.vehiculos.map(v => [`<b>${esc(v.placa)}</b>`, esc(v.tipo), String(v.capacidad), chip(v.estado), full && v.estado !== "En ruta" ? `<button class="btn sm sec" data-act="veh-estado" data-id="${v.id_vehiculo}">${v.estado === "Mantenimiento" ? "Marcar disponible" : "Enviar a mantenimiento"}</button>` : ""]);
+    return `<div class="card"><div class="card-head"><h2>Flota de reparto</h2>${full ? `<button class="btn" data-act="veh-nuevo">+ Nuevo vehículo</button>` : ""}</div>${tabla(["Placa", "Tipo", "Capacidad (bidones)", "Estado", "Acciones"], filas)}</div>`;
+  },
+
+  mis() {
+    const mias = DB.d.rutas.filter(r => r.id_chofer === App.user.id_usuario && ["Generada", "Cargada", "En ruta"].includes(r.estado)).sort((a, b) => b.id_hoja_ruta - a.id_hoja_ruta);
+    if (!mias.length) return `<div class="card">${alerta("info", "No tiene hojas de ruta asignadas por ahora. El supervisor de logística le asignará una ruta.")}</div>`;
+    return `<div class="stack" style="max-width:640px">${mias.map(r => {
+      const ps = Q.rutaPedidos(r.id_hoja_ruta), hechas = ps.filter(p => p.estado !== "Pendiente").length, sig = ps.find(p => p.estado === "Pendiente");
+      return `<div class="card"><div class="card-head"><div><h2>${esc(r.codigo)} · Zona ${esc(r.zona)}</h2><span class="muted small">${esc(Q.vehiculo(r.id_vehiculo).placa)} · ${r.total_bidones} bidones</span></div>${chip(r.estado)}</div>
+        ${r.estado !== "En ruta" ? alerta("info", "La ruta aún no inició. Espere a que el supervisor confirme la carga y el inicio.") : `<div class="small muted">Avance: ${hechas} de ${ps.length} entregas</div><div class="barra" style="margin:4px 0 12px"><i style="width:${ps.length ? hechas / ps.length * 100 : 0}%"></i></div>`}
+        <div class="stack" style="gap:10px">${ps.map(rp => {
+          const p = Q.pedido(rp.id_pedido), c = Q.cliente(p.id_cliente), pend = r2(p.total - Q.pagado(p.id_pedido)), actual = sig && sig.id === rp.id && r.estado === "En ruta";
+          return `<div class="parada ${actual ? "actual" : ""}"><div class="fila"><span class="num">${rp.orden}</span><div style="flex:1;min-width:0"><b>${esc(c.nombre)}</b><br><span class="muted small">${esc(p.direccion)}${c.referencia ? " · " + esc(c.referencia) : ""} · Tel. ${esc(c.telefono)}</span></div>${chip(rp.estado)}</div>
+            <div class="small">Pedido ${Q.pedCod(p.id_pedido)} · <b>${Q.bidones(p.id_pedido)} bidones</b> · Cobro: <b>${pend > 0 ? money(pend) : "Pagado"}</b> (${esc(p.modalidad_pago)})${rp.motivo ? " · " + esc(rp.motivo) : ""}</div>
+            ${rp.estado === "Pendiente" && r.estado === "En ruta" ? `<div class="botones"><button class="btn ok" data-act="ent-abrir" data-ruta="${r.id_hoja_ruta}" data-ped="${p.id_pedido}" data-est="Entregado">Entregado</button><button class="btn err sec" data-act="ent-abrir" data-ruta="${r.id_hoja_ruta}" data-ped="${p.id_pedido}" data-est="Rechazado">Rechazado</button><button class="btn sec" data-act="ent-abrir" data-ruta="${r.id_hoja_ruta}" data-ped="${p.id_pedido}" data-est="Reprogramado">Reprogramar</button></div>` : ""}</div>`;
+        }).join("")}</div>
+        ${r.estado === "En ruta" ? alerta("warn", "La ruta no puede cerrarse hasta registrar el estado final de todas las paradas. El supervisor la cierra al regresar a planta.") : ""}</div>`;
+    }).join("")}</div>`;
+  },
+};
+
+Acts["plan-sel"] = el => { const f = App.filtro("logistica"), id = +el.dataset.id; f.sel = f.sel || []; const i = f.sel.indexOf(id); if (i >= 0) f.sel.splice(i, 1); else f.sel.push(id); App.render(); };
+Acts["ruta-crear"] = () => {
+  const f = App.filtro("logistica"), zona = f.zona || $("#pz").value;
+  const id = Svc.crearRuta({ zona, vehiculoId: +$("#sel-veh").value, choferId: +$("#sel-chofer").value, pedidoIds: (f.sel || []).slice() }, App.user);
+  f.sel = []; toast("Hoja de ruta " + Q.ruta(id).codigo + " generada. Los pedidos pasaron a «Programado».", "ok"); App.tabs.logistica = "rutas"; App.render();
+};
+Acts["ruta-cargar"] = el => Modal.confirmar("Cargar vehículo", "Al confirmar la carga se descontarán del inventario los bidones llenos de esta hoja de ruta.", "Confirmar carga", () => { Svc.cargarRuta(+el.dataset.id, App.user); toast("Vehículo cargado. Stock actualizado.", "ok"); App.render(); });
+Acts["ruta-iniciar"] = el => { Svc.iniciarRuta(+el.dataset.id, App.user); toast("Ruta iniciada. El chofer ya puede registrar entregas.", "ok"); App.render(); };
+Acts["ruta-cerrar"] = el => Modal.confirmar("Cerrar hoja de ruta", "Se cerrará la ruta y los bidones no entregados regresarán al stock. Luego debe registrarse la recepción de envases y el cierre de caja.", "Cerrar ruta", () => { Svc.cerrarRuta(+el.dataset.id, App.user); toast("Ruta cerrada. Pendiente: recepción de envases y cierre de caja.", "ok"); App.render(); });
+Acts["veh-nuevo"] = () => Modal.form({ titulo: "Nuevo vehículo", cuerpo: `<div class="campos">${campo("Placa", `<input name="placa" placeholder="ABC-123" required>`)}${campo("Tipo", `<select name="tipo">${opts(["Camión pequeño", "Furgoneta", "Motocarga", "Camioneta"])}</select>`)}${campo("Capacidad (bidones)", `<input type="number" name="cap" min="1" required>`)}</div>`, onOk(f) { Svc.guardarVehiculo({ placa: fval(f, "placa").trim(), tipo: fval(f, "tipo"), capacidad: +fval(f, "cap") }, App.user); toast("Vehículo registrado.", "ok"); App.render(); } });
+Acts["veh-estado"] = el => { Svc.need(App.user, "logistica"); const v = Q.vehiculo(+el.dataset.id); v.estado = v.estado === "Mantenimiento" ? "Disponible" : "Mantenimiento"; DB.save(); App.render(); };
+
+function verRuta(id) {
+  const r = Q.ruta(id), ps = Q.rutaPedidos(id), full = App.puede("logistica") && r.estado === "En ruta" && (!esChofer() || r.id_chofer === App.user.id_usuario);
+  const filas = ps.map(rp => { const p = Q.pedido(rp.id_pedido); return [String(rp.orden), `<b>${Q.pedCod(p.id_pedido)}</b>`, esc(Q.cliente(p.id_cliente).nombre) + `<br><span class="muted small">${esc(p.direccion)}</span>`, String(Q.bidones(p.id_pedido)), chip(rp.estado) + (rp.motivo ? `<br><span class="muted small">${esc(rp.motivo)}</span>` : ""), rp.estado === "Entregado" ? String(rp.envases_recibidos) : "—",
+    full && rp.estado === "Pendiente" ? `<button class="btn sm ok" data-act="ent-abrir" data-ruta="${id}" data-ped="${p.id_pedido}" data-est="Entregado" data-vuelve="1">Entregado</button> <button class="btn sm err sec" data-act="ent-abrir" data-ruta="${id}" data-ped="${p.id_pedido}" data-est="Rechazado" data-vuelve="1">No entregado</button>` : ""]; });
+  Modal.abrir({ titulo: "Hoja de ruta " + r.codigo, ancho: true, cuerpo: `<div class="stack"><div class="grid g2"><div>Zona <b>${esc(r.zona)}</b> · Vehículo <b>${esc(Q.vehiculo(r.id_vehiculo).placa)}</b><br>Chofer: ${esc(Q.userName(r.id_chofer))} · Programó: ${esc(Q.userName(r.id_programador))}</div>
+    <div>Estado: ${chip(r.estado)}<br>Bidones: <b>${r.total_bidones}</b> · Envases a retornar: <b>${r.envases_esperados}</b><br>Salida: ${fdt(r.hora_salida)} · Retorno: ${fdt(r.hora_retorno)}</div></div>
+    ${tabla(["Orden", "Pedido", "Cliente", "Bidones", "Estado", "Envases", "Acciones"], filas)}</div>`, pie: `<button class="btn sec" data-cerrar>Cerrar</button>` });
+}
+Acts["ruta-ver"] = el => verRuta(+el.dataset.id);
+Acts["ruta-print"] = el => {
+  const r = Q.ruta(+el.dataset.id), ps = Q.rutaPedidos(r.id_hoja_ruta);
+  imprimir("Hoja de ruta " + r.codigo, `<div class="cab"><h1>Hoja de ruta ${esc(r.codigo)}</h1>Fecha: ${fdate(r.fecha)} · Zona: ${esc(r.zona)} · Vehículo: ${esc(Q.vehiculo(r.id_vehiculo).placa)} · Chofer: ${esc(Q.userName(r.id_chofer))}</div>
+  <table><tr><th>#</th><th>Pedido</th><th>Cliente / dirección</th><th class="r">Bidones</th><th>Envase</th><th class="r">Cobro</th><th>Firma</th></tr>${ps.map(rp => { const p = Q.pedido(rp.id_pedido); return `<tr><td>${rp.orden}</td><td>${Q.pedCod(p.id_pedido)}</td><td>${esc(Q.cliente(p.id_cliente).nombre)}<br>${esc(p.direccion)}</td><td class="r">${Q.bidones(p.id_pedido)}</td><td>${esc(Q.items(p.id_pedido).map(i => i.tipo_envase)[0] || "")}</td><td class="r">${esc(p.modalidad_pago)} ${money(p.total)}</td><td></td></tr>`; }).join("")}</table>
+  <p><b>Total de bidones:</b> ${r.total_bidones} · <b>Envases vacíos a recibir:</b> ${r.envases_esperados}</p><div class="firma"><div>Despachador</div><div>Chofer</div><div>Supervisor</div></div>`);
+};
+Acts["ent-abrir"] = el => {
+  const rutaId = +el.dataset.ruta, pedId = +el.dataset.ped, est = el.dataset.est, vuelve = !!el.dataset.vuelve;
+  const p = Q.pedido(pedId), pend = r2(p.total - Q.pagado(pedId)), inter = Q.intercambio(pedId);
+  Modal.form({ titulo: "Parada · " + Q.cliente(p.id_cliente).nombre, ok: "Guardar estado",
+    cuerpo: `<p class="muted">Pedido ${Q.pedCod(pedId)} · ${Q.bidones(pedId)} bidones · Total ${money(p.total)}</p>
+    <div class="campos">${campo("Estado de la entrega", `<select name="estado" id="est">${opts(["Entregado", "Rechazado", "Reprogramado"], est)}</select>`, "", "span2")}</div>
+    <div id="bl-ent" class="campos">${campo("Envases vacíos recibidos", `<input type="number" name="envases" min="0" value="${inter}">`, `Debe devolver ${inter} por el intercambio (RN-OP01). Si recibe menos, el resto queda en préstamo.`)}${campo("Monto cobrado (S/)", `<input type="number" name="monto" min="0" step="0.01" value="${pend.toFixed(2)}">`, `Método acordado: ${esc(p.modalidad_pago)}`)}</div>
+    <div id="bl-no" class="campos hidden">${campo("Motivo de la no entrega (obligatorio)", `<select name="motivo">${opts(["Cliente ausente", "Dirección incorrecta o no ubicada", "Cliente rechazó el pedido", "Sin dinero para pagar", "Otro"])}</select>`, "", "span2")}</div>`,
+    alMontar(m) { const s = $("#est", m), a = $("#bl-ent", m), b = $("#bl-no", m); const u = () => { const e = s.value === "Entregado"; a.classList.toggle("hidden", !e); b.classList.toggle("hidden", e); }; s.onchange = u; u(); },
+    onOk(f) { Svc.entrega({ rutaId, pedidoId: pedId, estado: fval(f, "estado"), envases: fval(f, "envases"), monto: fval(f, "monto"), motivo: fval(f, "motivo") }, App.user); toast("Estado de la parada guardado.", "ok"); App.render(); if (vuelve) setTimeout(() => verRuta(rutaId), 0); } });
+};
+
+// ======================= CAJA =======================
+Views.caja = {
+  titulo: "Caja y finanzas", modulo: "caja",
+  render() {
+    const full = App.puede("caja"), t = App.tab("caja", "cuadre");
+    const tabs = [["cuadre", "Cuadre de caja"], ["pagos", "Pagos"], ["comprobantes", "Comprobantes"]];
+    let c = "";
+    if (t === "cuadre") {
+      const pend = DB.d.rutas.filter(r => r.estado === "Cerrada" && !Q.tieneCierre(r.id_hoja_ruta));
+      const f = App.filtro("caja"), rid = +f.ruta || (pend[0] || {}).id_hoja_ruta, r = rid && pend.some(x => x.id_hoja_ruta === rid) ? Q.ruta(rid) : null;
+      let form = "";
+      if (!pend.length) form = `<div class="card">${alerta("ok", "No hay liquidaciones pendientes. Todas las rutas cerradas ya tienen cierre de caja.")}</div>`;
+      else if (r) {
+        const pagos = DB.d.pagos.filter(p => p.id_hoja_ruta === r.id_hoja_ruta), por = C.PAGOS.map(m => { const l = pagos.filter(p => p.metodo === m); return [m, String(l.length), money(l.reduce((a, p) => a + p.monto, 0))]; });
+        const tot = pagos.reduce((a, p) => a + p.monto, 0), efe = Svc.esperadoEfectivo(r.id_hoja_ruta);
+        const ps = Q.rutaPedidos(r.id_hoja_ruta), ent = ps.filter(x => x.estado === "Entregado").length, recib = ps.reduce((a, x) => a + (x.envases_recibidos || 0), 0);
+        form = `<div class="grid g-lado"><div class="card"><div class="card-head"><h2>Cobranza esperada por método de pago</h2>
+          <div class="campo"><label for="cr">Hoja de ruta</label><select id="cr" data-filtro="caja.ruta">${opts(pend.map(x => [x.id_hoja_ruta, x.codigo + " · " + Q.userName(x.id_chofer)]), r.id_hoja_ruta)}</select></div></div>
+          ${tabla(["Método", "N.º de pagos", "Monto"], por, { pie: `<tfoot><tr><td>TOTAL ESPERADO</td><td></td><td class="right mono">${money(tot)}</td></tr></tfoot>` })}
+          <p class="small muted">Pedidos entregados: <b>${ent}</b> de ${ps.length} · Envases esperados: <b>${r.envases_esperados}</b> · Envases recibidos del cliente: <b>${recib}</b>${Q.tieneRecepcion(r.id_hoja_ruta) ? "" : " · " + "<span style='color:var(--warn)'>falta la recepción en planta</span>"}</p></div>
+          <form class="card" id="form-cierre" data-form="cierre" novalidate><h2>Arqueo del efectivo</h2><input type="hidden" name="ruta" value="${r.id_hoja_ruta}"><input type="hidden" name="esperado" value="${efe}">
+            <div class="resumen"><span>Efectivo esperado</span><span class="right mono"><b>${money(efe)}</b></span></div>
+            <div class="stack" style="gap:12px;margin-top:12px">${full ? `${campo("Efectivo entregado por el chofer (S/)", `<input type="number" name="entregado" step="0.01" min="0" required>`)}
+            <div id="dif" class="small muted">Ingrese el monto entregado para calcular la diferencia.</div>
+            ${campo("Justificación del descuadre", `<input name="obs" placeholder="Obligatoria si hay diferencia">`)}
+            <button class="btn lg" type="submit">Cerrar caja y liquidación</button><p class="muted small" style="margin:0">Una liquidación cerrada ya no puede modificarse.</p>` : alerta("info", "Solo el cajero puede cerrar la liquidación.")}</div></form></div>`;
+      } else form = `<div class="card">${alerta("warn", "Seleccione una hoja de ruta.")}</div>`;
+      const cierres = DB.d.cierres.slice().sort((a, b) => b.id_cierre - a.id_cierre).slice(0, 10).map(x => [fdate(x.fecha), esc(Q.ruta(x.id_hoja_ruta).codigo), esc(Q.userName(x.id_chofer)), money(x.esperado), money(x.entregado), x.diferencia === 0 ? chip("Cuadra", "ok") : chip(money(x.diferencia), "err"), `<button class="btn sm sec" data-act="arqueo-print" data-id="${x.id_cierre}">Reporte de arqueo</button>`]);
+      c = `<div class="stack">${form}<div class="card"><h2>Cierres de caja recientes</h2>${tabla(["Fecha", "Ruta", "Chofer", "Esperado", "Entregado", "Diferencia", "Acciones"], cierres, { vacio: "Sin cierres registrados." })}</div></div>`;
+    } else if (t === "pagos") {
+      const pend = DB.d.pedidos.filter(p => !["Cancelado", "Rechazado"].includes(p.estado) && Q.pagado(p.id_pedido) < p.total - 0.001).sort((a, b) => b.id_pedido - a.id_pedido).slice(0, 25).map(p => [`<b>${Q.pedCod(p.id_pedido)}</b>`, esc(Q.cliente(p.id_cliente).nombre), esc(p.modalidad_pago), chip(p.estado), money(p.total), money(r2(p.total - Q.pagado(p.id_pedido))), full ? `<button class="btn sm" data-act="pago-nuevo" data-id="${p.id_pedido}">Registrar pago</button>` : ""]);
+      const pagos = DB.d.pagos.slice().sort((a, b) => b.id_pago - a.id_pago).slice(0, 15).map(p => [fdt(p.fecha_hora), Q.pedCod(p.id_pedido), esc(p.metodo), esc(p.referencia || "—"), p.verificado ? chip("Verificado", "ok") : chip("Sin verificar", "warn"), money(p.monto)]);
+      c = `<div class="stack"><div class="card"><h2>Pedidos con saldo pendiente</h2>${tabla(["N.º", "Cliente", "Método", "Estado", "Total", "Saldo", "Acciones"], pend, { vacio: "No hay pedidos con saldo pendiente." })}</div>
+        <div class="card"><h2>Últimos pagos registrados</h2>${tabla(["Fecha y hora", "Pedido", "Método", "Referencia", "Verificación", "Monto"], pagos)}</div></div>`;
+    } else {
+      const sin = DB.d.pedidos.filter(p => p.estado === "Entregado" && Q.pagado(p.id_pedido) >= p.total - 0.001 && !DB.d.comprobantes.some(c => c.id_pedido === p.id_pedido)).sort((a, b) => b.id_pedido - a.id_pedido).slice(0, 20).map(p => { const cl = Q.cliente(p.id_cliente); return [`<b>${Q.pedCod(p.id_pedido)}</b>`, esc(cl.nombre), cl.doc_tipo === "RUC" ? "Factura" : "Boleta", money(p.total), full ? `<button class="btn sm" data-act="comp-emitir" data-id="${p.id_pedido}">Emitir comprobante</button>` : ""]; });
+      const comps = DB.d.comprobantes.slice().sort((a, b) => b.id_comprobante - a.id_comprobante).slice(0, 15).map(x => [`<b>${x.tipo} ${x.serie}-${String(x.numero).padStart(6, "0")}</b>`, fdate(x.fecha_emision), esc(Q.cliente(Q.pedido(x.id_pedido).id_cliente).nombre), money(x.total), chip(x.estado_sunat)]);
+      c = `<div class="stack">${alerta("info", "En esta versión de práctica la validación SUNAT está <b>simulada</b>: el comprobante se registra con estado «Aceptado». Para emisión real se integrará un servicio OSE/PSE.")}
+        <div class="card"><h2>Pedidos entregados y pagados sin comprobante</h2>${tabla(["N.º", "Cliente", "Tipo", "Total", "Acciones"], sin, { vacio: "No hay comprobantes por emitir." })}</div>
+        <div class="card"><h2>Comprobantes emitidos</h2>${tabla(["Comprobante", "Fecha", "Cliente", "Total", "SUNAT"], comps)}</div></div>`;
+    }
+    return soloLectura("caja") + tabsHtml("caja", tabs, "cuadre") + c;
+  },
+  montar() {
+    const f = $("#form-cierre"); if (!f || !f.elements.entregado) return;
+    const dif = $("#dif"), esp = +f.elements.esperado.value;
+    f.elements.entregado.addEventListener("input", () => {
+      const v = parseFloat(f.elements.entregado.value); if (isNaN(v)) { dif.className = "small muted"; dif.textContent = "Ingrese el monto entregado para calcular la diferencia."; return; }
+      const d = r2(v - esp);
+      dif.className = "alerta " + (d === 0 ? "ok" : "err");
+      dif.innerHTML = d === 0 ? "<span>✔</span><div>La caja cuadra.</div>" : `<span>⚠</span><div><b>Descuadre detectado:</b> diferencia de ${money(d)} (${d < 0 ? "faltante" : "sobrante"}).</div>`;
+    });
+  },
+};
+Forms.cierre = f => { Svc.cerrarCaja({ rutaId: +f.elements.ruta.value, entregado: f.elements.entregado.value, obs: f.elements.obs.value }, App.user); toast("Caja cerrada. La liquidación ya no puede modificarse.", "ok"); App.filtro("caja").ruta = null; App.render(); };
+Acts["pago-nuevo"] = el => {
+  const p = Q.pedido(+el.dataset.id), pend = r2(p.total - Q.pagado(p.id_pedido));
+  Modal.form({ titulo: "Registrar pago de " + Q.pedCod(p.id_pedido), cuerpo: `<p class="muted">Saldo pendiente: <b>${money(pend)}</b></p><div class="campos">${campo("Monto (S/)", `<input type="number" name="monto" step="0.01" min="0.01" value="${pend.toFixed(2)}" required>`)}${campo("Método", `<select name="metodo">${opts(C.PAGOS, p.modalidad_pago)}</select>`)}${campo("N.º de operación (si aplica)", `<input name="ref">`, "", "span2")}</div>`, onOk(f) { Svc.registrarPago({ pedidoId: p.id_pedido, monto: fval(f, "monto"), metodo: fval(f, "metodo"), ref: fval(f, "ref") }, App.user); toast("Pago registrado.", "ok"); App.render(); } });
+};
+Acts["comp-emitir"] = el => { Svc.emitirComprobante(+el.dataset.id, App.user); toast("Comprobante emitido.", "ok"); App.render(); };
+Acts["arqueo-print"] = el => {
+  const x = DB.d.cierres.find(c => c.id_cierre === +el.dataset.id), r = Q.ruta(x.id_hoja_ruta), pagos = DB.d.pagos.filter(p => p.id_hoja_ruta === r.id_hoja_ruta);
+  imprimir("Arqueo " + r.codigo, `<div class="cab"><h1>Reporte de arqueo de caja</h1>Fecha: ${fdate(x.fecha)} · Hoja de ruta: ${esc(r.codigo)} · Chofer: ${esc(Q.userName(x.id_chofer))} · Cajero: ${esc(Q.userName(x.id_cajero))}</div>
+  <h2>Cobranza por método de pago</h2><table><tr><th>Método</th><th class="r">N.º</th><th class="r">Monto</th></tr>${C.PAGOS.map(m => { const l = pagos.filter(p => p.metodo === m); return `<tr><td>${m}</td><td class="r">${l.length}</td><td class="r">${money(l.reduce((a, p) => a + p.monto, 0))}</td></tr>`; }).join("")}</table>
+  <h2>Efectivo</h2><table><tr><td>Esperado</td><td class="r">${money(x.esperado)}</td></tr><tr><td>Entregado</td><td class="r">${money(x.entregado)}</td></tr><tr><th>Diferencia</th><th class="r">${money(x.diferencia)}</th></tr></table>
+  ${x.obs ? `<p><b>Observación:</b> ${esc(x.obs)}</p>` : ""}<div class="firma"><div>Cajero</div><div>Chofer</div><div>Administración</div></div>`);
+};
+
+/* ====== views-admin.js ====== */
+/* ===========================================================
+   Vistas: Reportes · Usuarios
+   =========================================================== */
+
+// ----- cálculo de datos de reportes -----
+function entregasEnRango(desde, hasta) {
+  return DB.d.ruta_pedidos.filter(rp => rp.estado === "Entregado" && rp.hora && rp.hora.slice(0, 10) >= desde && rp.hora.slice(0, 10) <= hasta)
+    .map(rp => { const p = Q.pedido(rp.id_pedido), pg = DB.d.pagos.find(x => x.id_pedido === p.id_pedido); return { fecha: rp.hora.slice(0, 10), p, cl: Q.cliente(p.id_cliente), bidones: Q.bidones(p.id_pedido), metodo: pg ? pg.metodo : p.modalidad_pago, ruta: Q.ruta(rp.id_hoja_ruta) }; });
+}
+function rangoReporte() {
+  const f = App.filtro("reportes"), hoy = isoDate();
+  return { desde: f.desde || addDays(hoy, -7), hasta: f.hasta || hoy };
+}
+
+Views.reportes = {
+  titulo: "Reportes y estadísticas", modulo: "reportes",
+  render() {
+    const { desde, hasta } = rangoReporte(), t = App.tab("reportes", "ventas");
+    const tabs = [["ventas", "Ventas"], ["inventario", "Inventario y rotación"], ["logistica", "Desempeño logístico"], ["finanzas", "Ingresos y caja"]];
+    const filtros = `<div class="fila no-print" style="margin-bottom:14px"><div class="campo"><label for="rd">Desde</label><input id="rd" type="date" data-filtro="reportes.desde" value="${desde}"></div><div class="campo"><label for="rh">Hasta</label><input id="rh" type="date" data-filtro="reportes.hasta" value="${hasta}"></div>
+      <button class="btn sm sec" data-act="rep-rango" data-dias="0">Hoy</button><button class="btn sm sec" data-act="rep-rango" data-dias="7">Últimos 7 días</button><button class="btn sm sec" data-act="rep-rango" data-dias="30">Últimos 30 días</button><button class="btn sm sec" onclick="window.print()">Imprimir</button></div>`;
+    const cuerpo = { ventas: this.ventas, inventario: this.inv, logistica: this.log, finanzas: this.fin }[t].call(this, desde, hasta);
+    return soloLectura("reportes") + tabsHtml("reportes", tabs, "ventas") + filtros + cuerpo;
+  },
+  ventas(desde, hasta) {
+    const e = entregasEnRango(desde, hasta), tot = e.reduce((a, x) => a + x.p.total, 0), bid = e.reduce((a, x) => a + x.bidones, 0);
+    const dias = []; for (let d = desde; d <= hasta && dias.length < 62; d = addDays(d, 1)) dias.push(d);
+    const por = dias.map(d => e.filter(x => x.fecha === d).reduce((a, x) => a + x.p.total, 0)), mx = Math.max(...por, 1);
+    const chart = dias.length <= 31 ? `<div class="chart" role="img" aria-label="Ventas por día">${dias.map((d, i) => `<div class="col"><em>${por[i] ? Math.round(por[i]) : ""}</em><b style="height:${Math.max(2, por[i] / mx * 120)}px"></b><span>${d.slice(8)}/${d.slice(5, 7)}</span></div>`).join("")}</div>` : `<p class="muted">Rango muy amplio para graficar por día.</p>`;
+    const zonas = C.ZONAS.map(z => { const l = e.filter(x => x.p.zona === z); return [z, String(l.length), String(l.reduce((a, x) => a + x.bidones, 0)), money(l.reduce((a, x) => a + x.p.total, 0))]; });
+    const cli = {}; e.forEach(x => { cli[x.cl.nombre] = (cli[x.cl.nombre] || 0) + x.p.total; });
+    const top = Object.entries(cli).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([n, v]) => [esc(n), money(v)]);
+    return `<div class="stack"><div class="grid g4">
+      <div class="card kpi az"><div class="t">Pedidos entregados</div><div class="v">${e.length}</div></div>
+      <div class="card kpi ok"><div class="t">Ventas (con IGV)</div><div class="v">${money(tot)}</div></div>
+      <div class="card kpi vd"><div class="t">Bidones vendidos</div><div class="v">${num(bid)}</div></div>
+      <div class="card kpi warn"><div class="t">Ticket promedio</div><div class="v">${money(e.length ? tot / e.length : 0)}</div></div></div>
+      <div class="card"><div class="card-head"><h2>Ventas por día (S/)</h2><button class="btn sm sec no-print" data-act="rep-csv-ventas">Exportar CSV</button></div>${chart}</div>
+      <div class="grid g2"><div class="card"><h2>Ventas por zona</h2>${tabla(["Zona", "Pedidos", "Bidones", "Total"], zonas)}</div><div class="card"><h2>Principales clientes</h2>${tabla(["Cliente", "Total"], top, { vacio: "Sin ventas en el período." })}</div></div></div>`;
+  },
+  inv(desde, hasta) {
+    const m = DB.d.movimientos.filter(x => x.fecha_hora.slice(0, 10) >= desde && x.fecha_hora.slice(0, 10) <= hasta);
+    const sum = (mot, tipo, cat) => m.filter(x => x.motivo === mot && x.tipo === tipo && (!cat || x.categoria === cat)).reduce((a, x) => a + x.cantidad, 0);
+    const prod = sum("PRODUCCION", "ENTRADA", "LLENO"), desp = sum("DESPACHO", "SALIDA", "LLENO"), ret = sum("RETORNO", "ENTRADA", "VACIO_POR_LAVAR"), dsc = sum("RETORNO", "ENTRADA", "DESCARTE"), mer = m.filter(x => x.motivo === "MERMA").reduce((a, x) => a + x.cantidad, 0);
+    const nd = Math.max(1, daysBetween(desde, hasta) + 1), prom = desp / nd, cob = prom ? Q.stock(1, "LLENO") / prom : 0;
+    const filas = Object.keys(C.CATEGORIAS).map(k => [C.CATEGORIAS[k], String(m.filter(x => x.categoria === k && x.tipo === "ENTRADA").reduce((a, x) => a + x.cantidad, 0)), String(m.filter(x => x.categoria === k && x.tipo === "SALIDA").reduce((a, x) => a + x.cantidad, 0)), String(Q.stock(k === "LLENO" ? 1 : 2, k))]);
+    const pres = DB.d.saldos.filter(s => s.envases > 0).sort((a, b) => b.envases - a.envases).map(s => [esc(Q.cliente(s.id_cliente).nombre), String(s.envases), s.desde ? fdate(s.desde) + " (" + daysBetween(s.desde, isoDate()) + " días)" : "—", Q.moroso(s.id_cliente) ? chip("Excede RN-PO03", "err") : chip("Normal", "ok")]);
+    return `<div class="stack"><div class="grid g4">
+      <div class="card kpi ok"><div class="t">Producidos</div><div class="v">${num(prod)}</div></div><div class="card kpi az"><div class="t">Despachados</div><div class="v">${num(desp)}</div></div>
+      <div class="card kpi warn"><div class="t">Envases retornados</div><div class="v">${num(ret + dsc)}</div></div><div class="card kpi err"><div class="t">Descarte y mermas</div><div class="v">${num(dsc + mer)}</div></div></div>
+      <div class="card"><h2>Rotación de inventario</h2><p>Despacho promedio: <b>${prom.toFixed(1)}</b> bidones por día · Cobertura con el stock actual (${num(Q.stock(1, "LLENO"))}): <b>${cob ? cob.toFixed(1) : "—"} días</b></p>
+        ${tabla(["Categoría", "Entradas", "Salidas", "Saldo actual"], filas)}</div>
+      <div class="card"><h2>Envases prestados por cliente</h2>${tabla(["Cliente", "Envases", "Desde", "Situación"], pres, { vacio: "Ningún cliente tiene envases en préstamo." })}</div></div>`;
+  },
+  log(desde, hasta) {
+    const rs = DB.d.rutas.filter(r => r.estado === "Cerrada" && r.fecha >= desde && r.fecha <= hasta).sort((a, b) => b.id_hoja_ruta - a.id_hoja_ruta);
+    let ent = 0, par = 0, hrs = 0, nHrs = 0;
+    const filas = rs.map(r => {
+      const ps = Q.rutaPedidos(r.id_hoja_ruta), e = ps.filter(x => x.estado === "Entregado").length, rec = DB.d.recepciones.find(x => x.id_hoja_ruta === r.id_hoja_ruta);
+      ent += e; par += ps.length; let dur = ""; if (r.hora_salida && r.hora_retorno) { const h = (new Date(r.hora_retorno) - new Date(r.hora_salida)) / 3600000; hrs += h; nHrs++; dur = h.toFixed(1) + " h"; }
+      return [`<b>${esc(r.codigo)}</b>`, fdate(r.fecha), esc(r.zona), esc(Q.userName(r.id_chofer)), `${e} de ${ps.length}`, dur || "—", String(r.total_bidones), `${r.envases_esperados} / ${rec ? rec.recibida : "—"}`];
+    });
+    return `<div class="stack"><div class="grid g4">
+      <div class="card kpi az"><div class="t">Rutas cerradas</div><div class="v">${rs.length}</div></div><div class="card kpi ok"><div class="t">Entregas exitosas</div><div class="v">${par ? Math.round(ent / par * 100) : 0} %</div></div>
+      <div class="card kpi warn"><div class="t">Duración promedio</div><div class="v">${nHrs ? (hrs / nHrs).toFixed(1) : "—"} h</div></div><div class="card kpi vd"><div class="t">Entregas por ruta</div><div class="v">${rs.length ? (ent / rs.length).toFixed(1) : 0}</div></div></div>
+      <div class="card"><h2>Detalle por hoja de ruta</h2>${tabla(["Ruta", "Fecha", "Zona", "Chofer", "Entregas", "Duración", "Bidones", "Envases esperados / recibidos"], filas, { vacio: "No hay rutas cerradas en el período." })}</div></div>`;
+  },
+  fin(desde, hasta) {
+    const pg = DB.d.pagos.filter(p => p.fecha_hora.slice(0, 10) >= desde && p.fecha_hora.slice(0, 10) <= hasta), tot = pg.reduce((a, p) => a + p.monto, 0);
+    const por = C.PAGOS.map(m => { const l = pg.filter(p => p.metodo === m), v = l.reduce((a, p) => a + p.monto, 0); return [m, String(l.length), money(v), tot ? (v / tot * 100).toFixed(1) + " %" : "—"]; });
+    const ci = DB.d.cierres.filter(c => c.fecha >= desde && c.fecha <= hasta), dif = ci.reduce((a, c) => a + c.diferencia, 0);
+    const filas = ci.sort((a, b) => b.id_cierre - a.id_cierre).map(c => [fdate(c.fecha), esc(Q.ruta(c.id_hoja_ruta).codigo), money(c.esperado), money(c.entregado), c.diferencia === 0 ? chip("Cuadra", "ok") : chip(money(c.diferencia), "err"), esc(c.obs || "—")]);
+    const comp = DB.d.comprobantes.filter(c => c.fecha_emision.slice(0, 10) >= desde && c.fecha_emision.slice(0, 10) <= hasta);
+    return `<div class="stack"><div class="grid g4">
+      <div class="card kpi ok"><div class="t">Ingresos cobrados</div><div class="v">${money(tot)}</div></div><div class="card kpi az"><div class="t">Pagos registrados</div><div class="v">${pg.length}</div></div>
+      <div class="card kpi ${dif < 0 ? "err" : "ok"}"><div class="t">Diferencia acumulada de caja</div><div class="v">${money(dif)}</div></div><div class="card kpi vd"><div class="t">Comprobantes emitidos</div><div class="v">${comp.length}</div></div></div>
+      <div class="grid g2"><div class="card"><div class="card-head"><h2>Ingresos por método de pago</h2><button class="btn sm sec no-print" data-act="rep-csv-pagos">Exportar CSV</button></div>${tabla(["Método", "Pagos", "Monto", "Participación"], por)}</div>
+      <div class="card"><h2>Cierres de caja del período</h2>${tabla(["Fecha", "Ruta", "Esperado", "Entregado", "Diferencia", "Observación"], filas, { vacio: "Sin cierres en el período." })}</div></div></div>`;
+  },
+};
+Acts["rep-rango"] = el => { const n = +el.dataset.dias, f = App.filtro("reportes"); f.hasta = isoDate(); f.desde = addDays(isoDate(), -n); App.render(); };
+Acts["rep-csv-ventas"] = () => { const { desde, hasta } = rangoReporte(); descargarCSV(`ventas_${desde}_${hasta}.csv`, ["Fecha", "Pedido", "Cliente", "Zona", "Bidones", "Método de pago", "Subtotal", "IGV", "Total"], entregasEnRango(desde, hasta).map(x => [fdate(x.fecha), Q.pedCod(x.p.id_pedido), x.cl.nombre, x.p.zona, x.bidones, x.metodo, x.p.subtotal, x.p.igv, x.p.total])); };
+Acts["rep-csv-pagos"] = () => { const { desde, hasta } = rangoReporte(); descargarCSV(`ingresos_${desde}_${hasta}.csv`, ["Fecha y hora", "Pedido", "Método", "Referencia", "Monto"], DB.d.pagos.filter(p => p.fecha_hora.slice(0, 10) >= desde && p.fecha_hora.slice(0, 10) <= hasta).map(p => [fdt(p.fecha_hora), Q.pedCod(p.id_pedido), p.metodo, p.referencia, p.monto])); };
+
+// ======================= USUARIOS =======================
+Views.usuarios = {
+  titulo: "Usuarios y roles", modulo: "usuarios",
+  render() {
+    const filas = DB.d.usuarios.map(u => [`<b>${esc(u.nombres + " " + u.apellidos)}</b><br><span class="muted small">DNI ${esc(u.dni)}</span>`, esc(u.correo), chip(u.rol, "az"), chip(u.estado ? "Activo" : "Inactivo"),
+      `<button class="btn sm sec" data-act="usr-edit" data-id="${u.id_usuario}">Editar</button> ` + (u.id_usuario !== App.user.id_usuario ? `<button class="btn sm ${u.estado ? "err sec" : "ok"}" data-act="usr-estado" data-id="${u.id_usuario}">${u.estado ? "Desactivar" : "Activar"}</button>` : "")]);
+    const perm = C.ROLES.map(r => [`<b>${r}</b>`, ...["pedidos", "inventario", "produccion", "logistica", "caja", "reportes", "usuarios"].map(m => { const p = PERMISOS[r][m]; return p === "full" ? "●" : p === "read" ? "○" : "–"; })]);
+    return `<div class="stack"><div class="card"><div class="card-head"><h2>Usuarios del sistema</h2><button class="btn" data-act="usr-nuevo">+ Nuevo usuario</button></div>${tabla(["Usuario", "Correo", "Rol", "Estado", "Acciones"], filas)}</div>
+      <div class="card"><h2>Matriz de permisos por rol</h2>${tabla(["Rol", "Pedidos y clientes", "Inventario", "Producción", "Logística", "Caja", "Reportes", "Usuarios"], perm)}<p class="muted small">● acceso completo · ○ solo consulta · – sin acceso</p></div></div>`;
+  },
+};
+function usrForm(u = {}) {
+  return `<div class="campos">${campo("Nombres", `<input name="nombres" value="${esc(u.nombres || "")}" required>`)}${campo("Apellidos", `<input name="apellidos" value="${esc(u.apellidos || "")}" required>`)}
+  ${campo("DNI", `<input name="dni" inputmode="numeric" maxlength="8" value="${esc(u.dni || "")}" required>`)}${campo("Rol", `<select name="rol">${opts(C.ROLES, u.rol)}</select>`)}
+  ${campo("Correo (usuario de acceso)", `<input type="email" name="correo" value="${esc(u.correo || "")}" required>`, "", "span2")}
+  ${campo(u.id_usuario ? "Nueva contraseña (opcional)" : "Contraseña inicial", `<input type="password" name="password" autocomplete="new-password" ${u.id_usuario ? "" : "required"}>`, "Mínimo 6 caracteres.", "span2")}</div>`;
+}
+const leerUsr = f => ({ nombres: fval(f, "nombres").trim(), apellidos: fval(f, "apellidos").trim(), dni: fval(f, "dni").trim(), rol: fval(f, "rol"), correo: fval(f, "correo").trim(), password: fval(f, "password") });
+Acts["usr-nuevo"] = () => Modal.form({ titulo: "Nuevo usuario", ancho: true, cuerpo: usrForm(), onOk(f) { Svc.guardarUsuario(leerUsr(f), App.user); toast("Usuario creado.", "ok"); App.render(); } });
+Acts["usr-edit"] = el => { const u = Q.user(+el.dataset.id); Modal.form({ titulo: "Editar usuario", ancho: true, cuerpo: usrForm(u), onOk(f) { const d = leerUsr(f); if (d.password && d.password.length < 6) throw new Error("La contraseña debe tener al menos 6 caracteres."); Svc.guardarUsuario({ ...d, id_usuario: u.id_usuario }, App.user); toast("Usuario actualizado.", "ok"); App.render(); } }); };
+Acts["usr-estado"] = el => { Svc.need(App.user, "usuarios"); const u = Q.user(+el.dataset.id); u.estado = !u.estado; DB.save(); toast(u.estado ? "Usuario activado." : "Usuario desactivado: ya no podrá iniciar sesión.", "ok"); App.render(); };
+
+  </script>
+</body>
+</html>
